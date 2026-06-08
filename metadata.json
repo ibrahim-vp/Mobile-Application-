@@ -1,0 +1,6 @@
+{
+  "name": "Tango Game",
+  "description": "A 6x6 logical grid puzzle game where you balance Suns and Moons without putting three in a row, matching the given '=' and 'x' clues.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
