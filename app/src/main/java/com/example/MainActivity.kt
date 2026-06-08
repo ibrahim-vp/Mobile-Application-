@@ -52,154 +52,16 @@ import kotlinx.coroutines.Dispatchers
 
 enum class CellType { EMPTY, SUN, MOON }
 enum class ConstraintType { EQUALS, CROSS }
-enum class Difficulty { EASY, MEDIUM, HARD }
-
 data class TangoConstraint(val row: Int, val col: Int, val type: ConstraintType)
 
 data class TangoLevel(
     val id: Int,
-    val difficulty: Difficulty,
     val levelNumber: Int,
     val solution: List<List<CellType>>,
     val initial: List<List<CellType>>,
     val vConstraints: List<TangoConstraint>,
     val hConstraints: List<TangoConstraint>,
     val shadedCells: Set<Pair<Int, Int>>
-) {
-    val name: String get() = "${difficulty.name.lowercase().replaceFirstChar { it.uppercase() }} Level $levelNumber"
-}
-
-fun TangoLevel.mirrored(): TangoLevel {
-    val newSolution = solution.map { it.reversed() }
-    val newInitial = initial.map { it.reversed() }
-    val newV = vConstraints.map { it.copy(col = 4 - it.col) }
-    val newH = hConstraints.map { it.copy(col = 5 - it.col) }
-    val newShaded = shadedCells.map { Pair(it.first, 5 - it.second) }.toSet()
-    return this.copy(
-        id = this.id + 10,
-        solution = newSolution,
-        initial = newInitial,
-        vConstraints = newV,
-        hConstraints = newH,
-        shadedCells = newShaded
-    )
-}
-
-val E = CellType.EMPTY
-val S = CellType.SUN
-val M = CellType.MOON
-
-val baseEasy = TangoLevel(
-    id = 1,
-    difficulty = Difficulty.EASY,
-    levelNumber = 1,
-    solution = listOf(
-        listOf(M, S, M, S, M, S),
-        listOf(S, M, S, M, S, M),
-        listOf(M, M, S, S, M, S),
-        listOf(S, S, M, M, S, M),
-        listOf(M, S, S, M, M, S),
-        listOf(S, M, M, S, S, M)
-    ),
-    initial = listOf(
-        listOf(E, E, M, E, E, E),
-        listOf(E, M, E, M, E, E),
-        listOf(E, E, S, S, E, E),
-        listOf(E, E, E, E, S, M),
-        listOf(M, E, E, E, E, E),
-        listOf(E, E, M, E, E, M)
-    ),
-    vConstraints = listOf( // row, col (between col and col+1)
-        TangoConstraint(0, 0, ConstraintType.CROSS),
-        TangoConstraint(3, 2, ConstraintType.EQUALS),
-        TangoConstraint(4, 1, ConstraintType.EQUALS)
-    ),
-    hConstraints = listOf( // row, col (between row and row+1)
-        TangoConstraint(1, 0, ConstraintType.CROSS),
-        TangoConstraint(2, 1, ConstraintType.CROSS),
-        TangoConstraint(4, 3, ConstraintType.CROSS)
-    ),
-    shadedCells = setOf(Pair(2,2), Pair(2,3), Pair(3,2), Pair(3,3), Pair(4,2), Pair(4,3))
-)
-
-val baseMedium = TangoLevel(
-    id = 2,
-    difficulty = Difficulty.MEDIUM,
-    levelNumber = 1,
-    solution = listOf(
-        listOf(M, M, S, S, M, S),
-        listOf(S, M, S, M, S, M),
-        listOf(S, S, M, M, S, M),
-        listOf(M, S, M, S, M, S),
-        listOf(M, M, S, S, M, S),
-        listOf(S, S, M, M, S, M)
-    ),
-    initial = listOf(
-        listOf(M, E, E, E, E, S),
-        listOf(E, E, E, E, E, E),
-        listOf(S, E, E, E, E, E),
-        listOf(E, E, E, S, E, E),
-        listOf(E, E, E, E, E, E),
-        listOf(E, S, E, E, S, E)
-    ),
-    vConstraints = listOf(
-        TangoConstraint(0, 1, ConstraintType.CROSS),
-        TangoConstraint(1, 3, ConstraintType.CROSS),
-        TangoConstraint(3, 1, ConstraintType.CROSS),
-        TangoConstraint(4, 2, ConstraintType.EQUALS)
-    ),
-    hConstraints = listOf(
-        TangoConstraint(2, 2, ConstraintType.EQUALS),
-        TangoConstraint(4, 4, ConstraintType.CROSS)
-    ),
-    shadedCells = setOf(Pair(1,1), Pair(2,2), Pair(3,3), Pair(4,4))
-)
-
-val baseHard = TangoLevel(
-    id = 3,
-    difficulty = Difficulty.HARD,
-    levelNumber = 1,
-    solution = listOf(
-        listOf(S, M, M, S, S, M),
-        listOf(M, S, S, M, M, S),
-        listOf(S, M, S, M, S, M),
-        listOf(M, S, M, S, M, S),
-        listOf(M, M, S, S, M, S),
-        listOf(S, M, M, S, S, M)
-    ),
-    initial = listOf(
-        listOf(E, E, E, E, E, E),
-        listOf(E, E, S, E, E, E),
-        listOf(E, E, E, E, E, E),
-        listOf(E, S, E, E, E, E),
-        listOf(E, E, E, E, E, S),
-        listOf(E, E, E, E, E, E)
-    ),
-    vConstraints = listOf(
-        TangoConstraint(0, 1, ConstraintType.EQUALS),
-        TangoConstraint(2, 4, ConstraintType.CROSS),
-        TangoConstraint(3, 3, ConstraintType.CROSS),
-        TangoConstraint(5, 0, ConstraintType.CROSS)
-    ),
-    hConstraints = listOf(
-        TangoConstraint(0, 3, ConstraintType.CROSS),
-        TangoConstraint(1, 5, ConstraintType.CROSS),
-        TangoConstraint(2, 1, ConstraintType.CROSS),
-        TangoConstraint(4, 0, ConstraintType.CROSS)
-    ),
-    shadedCells = setOf()
-)
-
-val levels = listOf(
-    baseEasy,
-    baseEasy.mirrored().copy(id = 11, levelNumber = 2),
-    baseEasy.copy(id = 21, levelNumber = 3, vConstraints = emptyList(), hConstraints = emptyList()), // Simplest possible modification for a 3rd level
-    
-    baseMedium,
-    baseMedium.mirrored().copy(id = 12, levelNumber = 2),
-    
-    baseHard,
-    baseHard.mirrored().copy(id = 13, levelNumber = 2)
 )
 
 class MainActivity : ComponentActivity() {
@@ -217,18 +79,11 @@ class MainActivity : ComponentActivity() {
 class TangoViewModel(application: android.app.Application) : androidx.lifecycle.AndroidViewModel(application) {
     val prefs = application.getSharedPreferences("tango_prefs", android.content.Context.MODE_PRIVATE)
 
-    var selectedDifficulty by mutableStateOf(Difficulty.EASY)
-        private set
-        
-    var currentLevelNumber by mutableIntStateOf(prefs.getInt("progress_${Difficulty.EASY.name}", 1))
+    var currentLevelNumber by mutableIntStateOf(1)
         private set
 
-    var maxUnlockedLevel by mutableIntStateOf(prefs.getInt("max_unlocked_${Difficulty.EASY.name}", currentLevelNumber))
+    var currentLevel by mutableStateOf<TangoLevel>(LevelGenerator.generateLevel(currentLevelNumber))
         private set
-
-    val currentLevel: TangoLevel
-        get() = levels.firstOrNull { it.difficulty == selectedDifficulty && it.levelNumber == currentLevelNumber } 
-                ?: levels.first { it.difficulty == selectedDifficulty }
         
     var grid by mutableStateOf<List<List<CellType>>>(emptyList())
     var moveHistory = mutableListOf<List<List<CellType>>>()
@@ -245,68 +100,12 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
         private set
     
     var showWinOverlay by mutableStateOf(false)
-    var showCelebrationScreen by mutableStateOf(false)
     
-    var totalPuzzlesSolved by mutableIntStateOf(prefs.getInt("total_solved", 0))
-        private set
-    var statsEasySolved by mutableIntStateOf(prefs.getInt("stats_easy_solved", 0))
-        private set
-    var statsEasyTime by mutableLongStateOf(prefs.getLong("stats_easy_time", 0L))
-        private set
-    var statsMediumSolved by mutableIntStateOf(prefs.getInt("stats_medium_solved", 0))
-        private set
-    var statsMediumTime by mutableLongStateOf(prefs.getLong("stats_medium_time", 0L))
-        private set
-    var statsHardSolved by mutableIntStateOf(prefs.getInt("stats_hard_solved", 0))
-        private set
-    var statsHardTime by mutableLongStateOf(prefs.getLong("stats_hard_time", 0L))
-        private set
-        
     var soundEnabled by mutableStateOf(prefs.getBoolean("sound_enabled", true))
         private set
         
     fun playSound(freq: Double, durationMs: Int) {
-        if (!soundEnabled) return
-        viewModelScope.launch(Dispatchers.IO) {
-            try {
-                val sampleRate = 44100
-                val numSamples = (durationMs * sampleRate / 1000.0).toInt()
-                val generatedSnd = ByteArray(2 * numSamples)
-                
-                for (i in 0 until numSamples) {
-                    val dVal = Math.sin(2.0 * Math.PI * i.toDouble() / (sampleRate / freq))
-                    val valShort = (dVal * 32767).toInt().toShort()
-                    generatedSnd[i * 2] = (valShort.toInt() and 0x00ff).toByte()
-                    generatedSnd[i * 2 + 1] = ((valShort.toInt() and 0xff00) ushr 8).toByte()
-                }
-                
-                val audioTrack = AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_GAME)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                            .build()
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .setSampleRate(sampleRate)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                            .build()
-                    )
-                    .setTransferMode(AudioTrack.MODE_STATIC)
-                    .setBufferSizeInBytes(generatedSnd.size)
-                    .build()
-                
-                audioTrack.write(generatedSnd, 0, generatedSnd.size)
-                audioTrack.play()
-                
-                delay(durationMs.toLong() + 50)
-                audioTrack.release()
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
+        // Disabled to prevent AppOps attributionTag spam
     }
     
     fun toggleSound() {
@@ -314,41 +113,16 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
         prefs.edit().putBoolean("sound_enabled", soundEnabled).apply()
     }
     
-    override fun onCleared() {
-        super.onCleared()
-    }
-    
-    private var timerJob: Job? = null
+    private var timerJob: kotlinx.coroutines.Job? = null
     
     init {
         loadCurrentLevel()
     }
     
-    fun setDifficulty(diff: Difficulty) {
-        selectedDifficulty = diff
-        currentLevelNumber = prefs.getInt("progress_${diff.name}", 1)
-        maxUnlockedLevel = prefs.getInt("max_unlocked_${diff.name}", currentLevelNumber)
-        val maxLevelForDiff = levels.count { it.difficulty == diff }
-        if (currentLevelNumber > maxLevelForDiff) currentLevelNumber = maxLevelForDiff
-        if (maxUnlockedLevel > maxLevelForDiff) maxUnlockedLevel = maxLevelForDiff
-        
-        loadCurrentLevel()
-    }
-    
-    fun loadLevelSpecific(levelNum: Int) {
-        if (levelNum <= maxUnlockedLevel) {
-            currentLevelNumber = levelNum
-            prefs.edit().putInt("progress_${selectedDifficulty.name}", currentLevelNumber).apply()
-            loadCurrentLevel()
-        }
-    }
-    
     fun loadCurrentLevel() {
         showWinOverlay = false
-        showCelebrationScreen = false
         clearHint()
-        val lvl = currentLevel
-        grid = lvl.initial.map { it.toList() }
+        grid = currentLevel.initial.map { it.toList() }
         moveHistory.clear()
         timeSpent = 0
         isWon = false
@@ -358,32 +132,17 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
     
     fun nextLevel() {
         showWinOverlay = false
-        val nextNum = currentLevelNumber + 1
-        if (nextNum <= levels.count { it.difficulty == selectedDifficulty }) {
-            currentLevelNumber = nextNum
-            if (currentLevelNumber > maxUnlockedLevel) {
-                maxUnlockedLevel = currentLevelNumber
-                prefs.edit().putInt("max_unlocked_${selectedDifficulty.name}", maxUnlockedLevel).apply()
-            }
-            prefs.edit().putInt("progress_${selectedDifficulty.name}", currentLevelNumber).apply()
-            loadCurrentLevel()
-        }
-    }
-    
-    fun nextDifficulty() {
-        showCelebrationScreen = false
-        val diffs = Difficulty.entries.toTypedArray()
-        val nextIndex = (diffs.indexOf(selectedDifficulty) + 1).coerceAtMost(diffs.size - 1)
-        setDifficulty(diffs[nextIndex])
+        currentLevelNumber++
+        currentLevel = LevelGenerator.generateLevel(currentLevelNumber)
+        loadCurrentLevel()
     }
     
     private fun startTimer() {
         timerJob?.cancel()
         timerJob = viewModelScope.launch {
             while (!isWon) {
-                delay(1000)
+                kotlinx.coroutines.delay(1000)
                 timeSpent++
-                // playSound(880.0, 20) // Removed to prevent AppOps attributionTag spam
             }
         }
     }
@@ -577,12 +336,18 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
             }
         }
 
-        // Fallback
+        // Fallback for advanced thinking
         for (r in 0 until 6) {
             for (c in 0 until 6) {
-                if (grid[r][c] != currentLevel.solution[r][c] && currentLevel.initial[r][c] == CellType.EMPTY) {
-                    applyHint(r, c, currentLevel.solution[r][c], emptySet(), "Advanced deduction based on the overall board state.")
+                if (grid[r][c] == CellType.EMPTY) {
+                    val sol = currentLevel.solution[r][c]
+                    val typeStr = if (sol == CellType.SUN) "Sun" else "Moon"
+                    applyHint(r, c, sol, emptySet(), "Advanced logic deduction: by testing possibilities, placing the opposite leads to a contradiction. So it must be $typeStr.")
                     return
+                } else if (grid[r][c] != currentLevel.solution[r][c] && currentLevel.initial[r][c] == CellType.EMPTY) {
+                     val sol = currentLevel.solution[r][c]
+                     applyHint(r, c, sol, emptySet(), "This placed cell is incorrect and leads to a contradiction.")
+                     return
                 }
             }
         }
@@ -670,44 +435,7 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
         isWon = true
         playSound(1046.5, 200)
         timerJob?.cancel()
-        
-        totalPuzzlesSolved++
-        prefs.edit().putInt("total_solved", totalPuzzlesSolved).apply()
-        
-        when (selectedDifficulty) {
-            Difficulty.EASY -> {
-                statsEasySolved++
-                statsEasyTime += timeSpent
-                prefs.edit().putInt("stats_easy_solved", statsEasySolved)
-                    .putLong("stats_easy_time", statsEasyTime).apply()
-            }
-            Difficulty.MEDIUM -> {
-                statsMediumSolved++
-                statsMediumTime += timeSpent
-                prefs.edit().putInt("stats_medium_solved", statsMediumSolved)
-                    .putLong("stats_medium_time", statsMediumTime).apply()
-            }
-            Difficulty.HARD -> {
-                statsHardSolved++
-                statsHardTime += timeSpent
-                prefs.edit().putInt("stats_hard_solved", statsHardSolved)
-                    .putLong("stats_hard_time", statsHardTime).apply()
-            }
-        }
-        
-        val currentBest = prefs.getLong("best_time_${currentLevel.id}", -1L)
-        if (currentBest == -1L || timeSpent < currentBest) {
-            prefs.edit().putLong("best_time_${currentLevel.id}", timeSpent).apply()
-        }
-        
-        val maxLevelForDiff = levels.count { it.difficulty == selectedDifficulty }
-        val nextLevelNumber = currentLevelNumber + 1
-        
-        if (nextLevelNumber <= maxLevelForDiff) {
-            showWinOverlay = true
-        } else {
-            showCelebrationScreen = true
-        }
+        showWinOverlay = true
     }
 }
 
@@ -716,125 +444,7 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
 fun TangoApp() {
     val viewModel: TangoViewModel = viewModel()
     var showHowToPlay by remember { mutableStateOf(false) }
-    var showStatsPanel by remember { mutableStateOf(false) }
-    var showArchivePanel by remember { mutableStateOf(false) }
-    
-    if (showArchivePanel) {
-        val diffLevels = levels.filter { it.difficulty == viewModel.selectedDifficulty }
-        val chartData = diffLevels.mapNotNull {
-            val best = viewModel.prefs.getLong("best_time_${it.id}", -1L)
-            if (best != -1L) Pair("Lv${it.levelNumber}", best) else Pair("Lv${it.levelNumber}", 0L)
-        }
-        
-        AlertDialog(
-            onDismissRequest = { showArchivePanel = false },
-            title = { Text("Puzzle Archive - ${viewModel.selectedDifficulty.name.lowercase().replaceFirstChar{it.uppercase()}}", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Text("Completion Times", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    
-                    if (chartData.isNotEmpty() && chartData.any { it.second > 0L }) {
-                        val maxTime = chartData.maxOf { it.second }
-                        Row(
-                            modifier = Modifier.fillMaxWidth().height(120.dp),
-                            horizontalArrangement = Arrangement.SpaceEvenly,
-                            verticalAlignment = Alignment.Bottom
-                        ) {
-                            chartData.forEach { (label, time) ->
-                                val fraction = if (maxTime > 0) (time.toFloat() / maxTime.toFloat()) else 0f
-                                Column(
-                                    horizontalAlignment = Alignment.CenterHorizontally,
-                                    verticalArrangement = Arrangement.Bottom,
-                                    modifier = Modifier.weight(1f)
-                                ) {
-                                    Text(if (time > 0L) "${time}s" else "-", fontSize = 10.sp)
-                                    Spacer(Modifier.height(4.dp))
-                                    Box(
-                                        modifier = Modifier
-                                            .fillMaxWidth(0.8f)
-                                            .fillMaxHeight(fraction.coerceAtLeast(0.01f))
-                                            .background(Color(0xFF1976D2), RoundedCornerShape(topStart = 4.dp, topEnd = 4.dp))
-                                    )
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(label, fontSize = 10.sp, maxLines = 1)
-                                }
-                            }
-                        }
-                    } else {
-                        Text("No times recorded yet.", fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
-                    }
-                    
-                    Text("Levels", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
-                    
-                    LazyColumn(
-                        modifier = Modifier.fillMaxHeight(0.6f),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(count = viewModel.maxUnlockedLevel.coerceAtMost(diffLevels.size)) { index ->
-                            val lvl = index + 1
-                            val bestTime = viewModel.prefs.getLong("best_time_${diffLevels[index].id}", -1L)
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(Color(0xFFF5F4F1))
-                                    .clickable { 
-                                        viewModel.loadLevelSpecific(lvl)
-                                        showArchivePanel = false
-                                    }
-                                    .padding(12.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("Level ${diffLevels[index].levelNumber}", fontWeight = FontWeight.SemiBold)
-                                Text(if (bestTime != -1L) "Best: ${bestTime}s" else "No time recorded", fontSize = 12.sp, color = Color.Gray)
-                            }
-                        }
-                    }
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showArchivePanel = false }) { Text("Close") }
-            }
-        )
-    }
 
-    if (showStatsPanel) {
-        AlertDialog(
-            onDismissRequest = { showStatsPanel = false },
-            title = { Text("Performance Stats", fontWeight = FontWeight.Bold) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Total Puzzles Solved: ${viewModel.totalPuzzlesSolved}", fontWeight = FontWeight.SemiBold)
-                    
-                    Spacer(Modifier.height(4.dp))
-                    
-                    Text("Easy", fontWeight = FontWeight.Bold)
-                    Text("Solved: ${viewModel.statsEasySolved}")
-                    val easyAvg = if (viewModel.statsEasySolved > 0) viewModel.statsEasyTime / viewModel.statsEasySolved else 0
-                    Text("Avg. Time: ${easyAvg}s")
-                    
-                    Spacer(Modifier.height(4.dp))
-                    
-                    Text("Medium", fontWeight = FontWeight.Bold)
-                    Text("Solved: ${viewModel.statsMediumSolved}")
-                    val medAvg = if (viewModel.statsMediumSolved > 0) viewModel.statsMediumTime / viewModel.statsMediumSolved else 0
-                    Text("Avg. Time: ${medAvg}s")
-                    
-                    Spacer(Modifier.height(4.dp))
-                    
-                    Text("Hard", fontWeight = FontWeight.Bold)
-                    Text("Solved: ${viewModel.statsHardSolved}")
-                    val hardAvg = if (viewModel.statsHardSolved > 0) viewModel.statsHardTime / viewModel.statsHardSolved else 0
-                    Text("Avg. Time: ${hardAvg}s")
-                }
-            },
-            confirmButton = {
-                TextButton(onClick = { showStatsPanel = false }) { Text("Close") }
-            }
-        )
-    }
-    
     if (showHowToPlay) {
         AlertDialog(
             onDismissRequest = { showHowToPlay = false },
@@ -868,12 +478,6 @@ fun TangoApp() {
                     TextButton(onClick = { viewModel.toggleSound() }) {
                         Text(if (viewModel.soundEnabled) "ON" else "OFF", color = Color(0xFF6B655F), fontWeight = FontWeight.Bold)
                     }
-                    IconButton(onClick = { showArchivePanel = true }) {
-                        Icon(Icons.Default.List, contentDescription = "Puzzle Archive", tint = Color(0xFF6B655F))
-                    }
-                    IconButton(onClick = { showStatsPanel = true }) {
-                        Icon(Icons.Default.Star, contentDescription = "Stats", tint = Color(0xFF6B655F))
-                    }
                     IconButton(onClick = { showHowToPlay = true }) {
                         Icon(Icons.Default.Info, contentDescription = "How to play", tint = Color(0xFF6B655F))
                     }
@@ -890,41 +494,13 @@ fun TangoApp() {
         ) {
             Spacer(Modifier.height(16.dp))
             
-            // Difficulty Selector Box
-            Row(
-                modifier = Modifier
-                    .wrapContentWidth()
-                    .background(Color(0xFFF3F2EF), RoundedCornerShape(16.dp))
-                    .padding(4.dp),
-                horizontalArrangement = Arrangement.Center
-            ) {
-                Difficulty.entries.forEach { diff ->
-                    val isSelected = viewModel.selectedDifficulty == diff
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (isSelected) Color.White else Color.Transparent)
-                            .clickable { viewModel.setDifficulty(diff) }
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                    ) {
-                        Text(
-                            diff.name.lowercase().replaceFirstChar { it.uppercase() }, 
-                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                            color = if (isSelected) Color(0xFF1976D2) else Color(0xFF8D877F)
-                        )
-                    }
-                }
-            }
-            
-            Spacer(Modifier.height(16.dp))
-            
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    "Level ${"%02d".format(viewModel.currentLevelNumber)}",
+                    "Challenge ${"%02d".format(viewModel.currentLevelNumber)}",
                     style = MaterialTheme.typography.displaySmall,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF2C2A29)
@@ -1025,10 +601,7 @@ fun TangoApp() {
             Spacer(Modifier.height(16.dp))
             
             Button(
-                onClick = { 
-                    if (viewModel.showCelebrationScreen) viewModel.nextDifficulty() 
-                    else viewModel.nextLevel()
-                },
+                onClick = { viewModel.nextLevel() },
                 enabled = viewModel.isWon,
                 modifier = Modifier.fillMaxWidth().height(56.dp),
                 shape = RoundedCornerShape(16.dp),
@@ -1044,11 +617,7 @@ fun TangoApp() {
                     disabledElevation = 0.dp
                 )
             ) {
-                Text(
-                    if (viewModel.showCelebrationScreen && viewModel.selectedDifficulty != Difficulty.HARD) "Next Difficulty" else if (viewModel.showCelebrationScreen) "Play Again" else "Next Level", 
-                    fontWeight = FontWeight.ExtraBold, 
-                    fontSize = 18.sp
-                )
+                Text("Next Level", fontWeight = FontWeight.Bold, fontSize = 16.sp)
             }
             Spacer(Modifier.height(32.dp))
         }
