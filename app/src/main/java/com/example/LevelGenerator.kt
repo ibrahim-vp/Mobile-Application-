@@ -47,16 +47,16 @@ object LevelGenerator {
         return true
     }
 
-    private fun solve(grid: Array<Array<CellType>>): Boolean {
+    private fun solve(grid: Array<Array<CellType>>, random: kotlin.random.Random): Boolean {
         for(r in 0 until 6) {
             for(c in 0 until 6) {
                 if(grid[r][c] == CellType.EMPTY) {
                     val types = mutableListOf(CellType.SUN, CellType.MOON)
-                    types.shuffle()
+                    types.shuffle(random)
                     for(type in types) {
                         if(isValid(grid, r, c, type)) {
                             grid[r][c] = type
-                            if(solve(grid)) return true
+                            if(solve(grid, random)) return true
                             grid[r][c] = CellType.EMPTY
                         }
                     }
@@ -255,7 +255,69 @@ object LevelGenerator {
         return g.all { row -> row.all { it != CellType.EMPTY } }
     }
 
+    private fun isPartialConstraintsValid(
+        g: Array<Array<CellType>>, 
+        vCons: List<TangoConstraint>, 
+        hCons: List<TangoConstraint>
+    ): Boolean {
+        for (v in vCons) {
+            val left = g[v.row][v.col]
+            val right = g[v.row][v.col + 1]
+            if (left != CellType.EMPTY && right != CellType.EMPTY) {
+                if (v.type == ConstraintType.EQUALS && left != right) return false
+                if (v.type == ConstraintType.CROSS && left == right) return false
+            }
+        }
+        for (h in hCons) {
+            val top = g[h.row][h.col]
+            val bottom = g[h.row + 1][h.col]
+            if (top != CellType.EMPTY && bottom != CellType.EMPTY) {
+                if (h.type == ConstraintType.EQUALS && top != bottom) return false
+                if (h.type == ConstraintType.CROSS && top == bottom) return false
+            }
+        }
+        return true
+    }
+
+    fun countSolutions(
+        initial: Array<Array<CellType>>,
+        vCons: List<TangoConstraint>,
+        hCons: List<TangoConstraint>
+    ): Int {
+        var solutionCount = 0
+        val tempGrid = Array(6) { r -> Array(6) { c -> initial[r][c] } }
+        
+        fun backtrack(r: Int, c: Int) {
+            if (solutionCount > 1) return
+            if (r == 6) {
+                solutionCount++
+                return
+            }
+            val nextR = if (c == 5) r + 1 else r
+            val nextC = if (c == 5) 0 else c + 1
+            
+            if (tempGrid[r][c] != CellType.EMPTY) {
+                backtrack(nextR, nextC)
+                return
+            }
+            
+            for (type in listOf(CellType.SUN, CellType.MOON)) {
+                if (isValid(tempGrid, r, c, type)) {
+                    tempGrid[r][c] = type
+                    if (isPartialConstraintsValid(tempGrid, vCons, hCons)) {
+                        backtrack(nextR, nextC)
+                    }
+                    tempGrid[r][c] = CellType.EMPTY
+                }
+            }
+        }
+        
+        backtrack(0, 0)
+        return solutionCount
+    }
+
     fun generateLevel(levelId: Int): TangoLevel {
+        val random = kotlin.random.Random(levelId)
         var bestInitial: List<List<CellType>>? = null
         var bestSolution: List<List<CellType>>? = null
         var bestVCons: List<TangoConstraint>? = null
@@ -264,7 +326,7 @@ object LevelGenerator {
 
         for(attempt in 0 until 10) {
             val grid = Array(6) { Array(6) { CellType.EMPTY } }
-            solve(grid)
+            solve(grid, random)
             
             val possibleV = mutableListOf<TangoConstraint>()
             for(r in 0 until 6) {
@@ -280,23 +342,23 @@ object LevelGenerator {
                     possibleH.add(TangoConstraint(r, c, type))
                 }
             }
-            possibleV.shuffle()
-            possibleH.shuffle()
+            possibleV.shuffle(random)
+            possibleH.shuffle(random)
             
-            val vCons = possibleV.take(Random.nextInt(1, 4))
-            val hCons = possibleH.take(Random.nextInt(1, 4))
+            val vCons = possibleV.take(random.nextInt(1, 4))
+            val hCons = possibleH.take(random.nextInt(1, 4))
 
             val revealed = Array(6) { Array(6) { CellType.EMPTY } }
             val cells = mutableListOf<Pair<Int, Int>>()
             for(r in 0 until 6) for(c in 0 until 6) cells.add(Pair(r, c))
-            cells.shuffle()
+            cells.shuffle(random)
 
             for(cell in cells) {
                 revealed[cell.first][cell.second] = grid[cell.first][cell.second]
                 if(logicalSolve(revealed, vCons, hCons)) break
             }
 
-            cells.shuffle()
+            cells.shuffle(random)
             for((r, c) in cells) {
                 if(revealed[r][c] != CellType.EMPTY) {
                     val backup = revealed[r][c]
@@ -308,14 +370,14 @@ object LevelGenerator {
             }
 
             val givens = revealed.sumOf { row -> row.count { it != CellType.EMPTY } }
-            if (givens < minGivens) {
+            if (givens < minGivens && countSolutions(revealed, vCons, hCons) == 1) {
                 minGivens = givens
                 bestInitial = revealed.map { it.toList() }.toList()
                 bestSolution = grid.map { it.toList() }.toList()
                 bestVCons = vCons
                 bestHCons = hCons
             }
-            if (minGivens <= 6) break
+            if (minGivens <= 6 && bestInitial != null) break
         }
 
         return TangoLevel(

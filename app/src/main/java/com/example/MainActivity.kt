@@ -49,10 +49,27 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.material.icons.filled.Close
 
 enum class CellType { EMPTY, SUN, MOON }
 enum class ConstraintType { EQUALS, CROSS }
 data class TangoConstraint(val row: Int, val col: Int, val type: ConstraintType)
+
+data class PendingHintInfo(
+    val row: Int,
+    val col: Int,
+    val change: CellType,
+    val sources: Set<Pair<Int, Int>>,
+    val explanation: String
+)
+
+data class TraceStep(
+    val r: Int,
+    val c: Int,
+    val type: CellType,
+    val reason: String
+)
 
 data class TangoLevel(
     val id: Int,
@@ -63,6 +80,13 @@ data class TangoLevel(
     val hConstraints: List<TangoConstraint>,
     val shadedCells: Set<Pair<Int, Int>>
 )
+
+enum class Difficulty(val label: String, val color: Color, val description: String) {
+    EASY("Easy", Color(0xFF4CAF50), "Basic Sandwich and Pair rules required."),
+    MEDIUM("Medium", Color(0xFF1976D2), "Requires basic rules and constraint-matching."),
+    HARD("Hard", Color(0xFFF57C00), "Requires advanced Balance and LOOKAHEAD tracing."),
+    EXPERT("Expert", Color(0xFF9C27B0), "Requires deep lookahead logic and multi-step contradiction chains.")
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -79,10 +103,22 @@ class MainActivity : ComponentActivity() {
 class TangoViewModel(application: android.app.Application) : androidx.lifecycle.AndroidViewModel(application) {
     val prefs = application.getSharedPreferences("tango_prefs", android.content.Context.MODE_PRIVATE)
 
-    var currentLevelNumber by mutableIntStateOf(1)
+    var currentLevelNumber by mutableIntStateOf(prefs.getInt("current_level", 1))
         private set
 
-    var currentLevel by mutableStateOf<TangoLevel>(LevelGenerator.generateLevel(currentLevelNumber))
+    fun getLevelSeed(levelNum: Int): Int {
+        val key = "level_seed_$levelNum"
+        val cached = prefs.getInt(key, 0)
+        return if (cached != 0) {
+            cached
+        } else {
+            val newSeed = kotlin.random.Random.nextInt(1, 1000000)
+            prefs.edit().putInt(key, newSeed).apply()
+            newSeed
+        }
+    }
+
+    var currentLevel by mutableStateOf<TangoLevel>(LevelGenerator.generateLevel(getLevelSeed(currentLevelNumber)))
         private set
         
     var grid by mutableStateOf<List<List<CellType>>>(emptyList())
@@ -92,6 +128,8 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
     var isWon by mutableStateOf(false)
     var hintCount by mutableIntStateOf(0)
     
+    var activeHint by mutableStateOf<PendingHintInfo?>(null)
+        private set
     var hintExplanation by mutableStateOf("")
         private set
     var targetCell by mutableStateOf<Pair<Int, Int>?>(null)
@@ -103,6 +141,87 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
     
     var soundEnabled by mutableStateOf(prefs.getBoolean("sound_enabled", true))
         private set
+
+    var bestTime by mutableLongStateOf(0L)
+        private set
+
+    var lastClickedCell by mutableStateOf<Pair<Int, Int>?>(null)
+    var lastClickTime by mutableLongStateOf(0L)
+
+    fun getActiveGrid(): List<List<CellType>> {
+        val current = lastClickedCell
+        if (current != null) {
+            val now = System.currentTimeMillis()
+            if (now - lastClickTime < 1200) {
+                return grid.mapIndexed { r, row ->
+                    row.mapIndexed { c, type ->
+                        if (current.first == r && current.second == c) CellType.EMPTY else type
+                    }
+                }
+            }
+        }
+        return grid
+    }
+
+    fun getTripleViolationCells(): Set<Pair<Int, Int>> {
+        val cells = mutableSetOf<Pair<Int, Int>>()
+        val activeGrid = getActiveGrid()
+        
+        // Horizontal check
+        for (r in 0 until 6) {
+            for (c in 0 until 4) {
+                if (activeGrid.size > r && activeGrid[r].size > c + 2) {
+                    val c1 = activeGrid[r][c]
+                    val c2 = activeGrid[r][c + 1]
+                    val c3 = activeGrid[r][c + 2]
+                    if (c1 != CellType.EMPTY && c1 == c2 && c2 == c3) {
+                        cells.add(Pair(r, c))
+                        cells.add(Pair(r, c + 1))
+                        cells.add(Pair(r, c + 2))
+                    }
+                }
+            }
+        }
+        
+        // Vertical check
+        for (c in 0 until 6) {
+            for (r in 0 until 4) {
+                if (activeGrid.size > r + 2 && activeGrid[r].size > c) {
+                    val r1 = activeGrid[r][c]
+                    val r2 = activeGrid[r + 1][c]
+                    val r3 = activeGrid[r + 2][c]
+                    if (r1 != CellType.EMPTY && r1 == r2 && r2 == r3) {
+                        cells.add(Pair(r, c))
+                        cells.add(Pair(r + 1, c))
+                        cells.add(Pair(r + 2, c))
+                    }
+                }
+            }
+        }
+        return cells
+    }
+
+    fun getLevelDifficulty(): Difficulty {
+        val levelNum = currentLevelNumber
+        val givens = currentLevel.initial.sumOf { row -> row.count { it != CellType.EMPTY } }
+        val consSize = currentLevel.vConstraints.size + currentLevel.hConstraints.size
+        
+        return when {
+            levelNum <= 1 -> Difficulty.EASY
+            levelNum <= 4 -> {
+                if (givens >= 12) Difficulty.EASY
+                else Difficulty.MEDIUM
+            }
+            levelNum <= 8 -> {
+                if (givens >= 10 && consSize >= 4) Difficulty.MEDIUM
+                else Difficulty.HARD
+            }
+            else -> {
+                if (givens >= 8 && consSize <= 2) Difficulty.HARD
+                else Difficulty.EXPERT
+            }
+        }
+    }
         
     fun playSound(freq: Double, durationMs: Int) {
         // Disabled to prevent AppOps attributionTag spam
@@ -115,6 +234,44 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
     
     private var timerJob: kotlinx.coroutines.Job? = null
     
+    fun serializeGrid(g: List<List<CellType>>): String {
+        return g.joinToString("") { row ->
+            row.joinToString("") { cell ->
+                when (cell) {
+                    CellType.EMPTY -> "0"
+                    CellType.SUN -> "1"
+                    CellType.MOON -> "2"
+                }
+            }
+        }
+    }
+
+    fun deserializeGrid(serialized: String): List<List<CellType>> {
+        if (serialized.length != 36) return emptyList()
+        val result = mutableListOf<List<CellType>>()
+        for (r in 0 until 6) {
+            val row = mutableListOf<CellType>()
+            for (c in 0 until 6) {
+                val char = serialized[r * 6 + c]
+                row.add(when (char) {
+                    '1' -> CellType.SUN
+                    '2' -> CellType.MOON
+                    else -> CellType.EMPTY
+                })
+            }
+            result.add(row)
+        }
+        return result
+    }
+
+    fun saveGridState() {
+        prefs.edit()
+            .putString("saved_grid_$currentLevelNumber", serializeGrid(grid))
+            .putLong("saved_time_$currentLevelNumber", timeSpent)
+            .putInt("saved_hints_$currentLevelNumber", hintCount)
+            .apply()
+    }
+
     init {
         loadCurrentLevel()
     }
@@ -122,9 +279,33 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
     fun loadCurrentLevel() {
         showWinOverlay = false
         clearHint()
+        val saved = prefs.getString("saved_grid_$currentLevelNumber", null)
+        if (saved != null && saved.length == 36) {
+            grid = deserializeGrid(saved)
+        } else {
+            grid = currentLevel.initial.map { it.toList() }
+        }
+        moveHistory.clear()
+        timeSpent = prefs.getLong("saved_time_$currentLevelNumber", 0L)
+        bestTime = prefs.getLong("best_time_$currentLevelNumber", 0L)
+        isWon = false
+        hintCount = prefs.getInt("saved_hints_$currentLevelNumber", 0)
+        startTimer()
+    }
+
+    fun replayLevel() {
+        showWinOverlay = false
+        clearHint()
+        prefs.edit()
+            .remove("saved_grid_$currentLevelNumber")
+            .remove("saved_time_$currentLevelNumber")
+            .remove("saved_hints_$currentLevelNumber")
+            .apply()
+        
         grid = currentLevel.initial.map { it.toList() }
         moveHistory.clear()
-        timeSpent = 0
+        timeSpent = 0L
+        bestTime = prefs.getLong("best_time_$currentLevelNumber", 0L)
         isWon = false
         hintCount = 0
         startTimer()
@@ -132,8 +313,16 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
     
     fun nextLevel() {
         showWinOverlay = false
+        // Remove saved state of completed level
+        prefs.edit()
+            .remove("saved_grid_$currentLevelNumber")
+            .remove("saved_time_$currentLevelNumber")
+            .remove("saved_hints_$currentLevelNumber")
+            .apply()
+        
         currentLevelNumber++
-        currentLevel = LevelGenerator.generateLevel(currentLevelNumber)
+        prefs.edit().putInt("current_level", currentLevelNumber).apply()
+        currentLevel = LevelGenerator.generateLevel(getLevelSeed(currentLevelNumber))
         loadCurrentLevel()
     }
     
@@ -143,11 +332,15 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
             while (!isWon) {
                 kotlinx.coroutines.delay(1000)
                 timeSpent++
+                if (timeSpent % 5 == 0L) {
+                    saveGridState()
+                }
             }
         }
     }
     
-    private fun clearHint() {
+    fun clearHint() {
+        activeHint = null
         hintExplanation = ""
         targetCell = null
         sourceCells = emptySet()
@@ -161,6 +354,16 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
         saveHistory()
         clearHint()
         
+        // Set temporary transition lock
+        lastClickedCell = Pair(r, c)
+        lastClickTime = System.currentTimeMillis()
+        viewModelScope.launch {
+            kotlinx.coroutines.delay(1200)
+            if (lastClickedCell == Pair(r, c)) {
+                lastClickedCell = null
+            }
+        }
+        
         val newGrid = grid.map { it.toMutableList() }
         newGrid[r][c] = when (grid[r][c]) {
             CellType.EMPTY -> CellType.SUN
@@ -168,6 +371,7 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
             CellType.MOON -> CellType.EMPTY
         }
         grid = newGrid
+        saveGridState()
         checkWin()
     }
     
@@ -177,6 +381,7 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
         clearHint()
         val last = moveHistory.removeLast()
         grid = last
+        saveGridState()
         checkWin()
     }
     
@@ -186,42 +391,230 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
         return CellType.EMPTY
     }
     
-    private fun applyHint(r: Int, c: Int, change: CellType, sources: Set<Pair<Int, Int>>, expl: String) {
+    fun setPendingHint(info: PendingHintInfo) {
+        activeHint = info
+        hintExplanation = info.explanation
+        targetCell = Pair(info.row, info.col)
+        sourceCells = info.sources
+    }
+
+    fun applyActiveHint() {
+        val hint = activeHint ?: return
         saveHistory()
-        hintExplanation = expl
-        targetCell = Pair(r, c)
-        sourceCells = sources
         val newGrid = grid.map { it.toMutableList() }
-        newGrid[r][c] = change
+        newGrid[hint.row][hint.col] = hint.change
         grid = newGrid
+        clearHint()
         hintCount++
         checkWin()
     }
     
     fun hint() {
         if (isWon) return
-        playSound(660.0, 30)
         clearHint()
+        
+        // 0. PRIORITIZE CHECKING USER MISTAKES FIRST
+        val userMistakes = mutableListOf<PendingHintInfo>()
+        for (r in 0 until 6) {
+            for (c in 0 until 6) {
+                if (grid[r][c] != CellType.EMPTY && currentLevel.initial[r][c] == CellType.EMPTY) {
+                    if (grid[r][c] != currentLevel.solution[r][c]) {
+                        val wrongVal = grid[r][c]
+                        val correctVal = currentLevel.solution[r][c]
+                        val wrongEmoji = if (wrongVal == CellType.SUN) "🟡" else "🌙"
+                        val correctEmoji = if (correctVal == CellType.SUN) "🟡" else "🌙"
+                        
+                        var explained = false
+                        
+                        // Check A: Is it violating a vertical constraint?
+                        for (vc in currentLevel.vConstraints) {
+                            if (vc.row == r && (vc.col == c || vc.col + 1 == c)) {
+                                val otherC = if (vc.col == c) c + 1 else c - 1
+                                val otherVal = grid[r][otherC]
+                                if (otherVal != CellType.EMPTY) {
+                                    val isBroken = when (vc.type) {
+                                        ConstraintType.EQUALS -> wrongVal != otherVal
+                                        ConstraintType.CROSS -> wrongVal == otherVal
+                                    }
+                                    if (isBroken) {
+                                        val otherEmoji = if (otherVal == CellType.SUN) "🟡" else "🌙"
+                                        val symbol = if (vc.type == ConstraintType.EQUALS) "=" else "×"
+                                        val requirementText = if (vc.type == ConstraintType.EQUALS) "equal to" else "different from"
+                                        val explanation = "Constraint Mistake detected!\n\n" +
+                                            "You placed $wrongEmoji at Row ${r+1}, Column ${c+1}, which is connected by '$symbol' to the $otherEmoji at Column ${otherC+1}.\n\n" +
+                                            "This breaks the rule that they must be $requirementText each other! Therefore, this cell must be corrected to $correctEmoji."
+                                        
+                                        userMistakes.add(PendingHintInfo(r, c, correctVal, setOf(Pair(r, otherC)), explanation))
+                                        explained = true
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                        if (explained) continue
+                        
+                        // Check B: Is it violating a horizontal constraint?
+                        for (hc in currentLevel.hConstraints) {
+                            if (hc.col == c && (hc.row == r || hc.row + 1 == r)) {
+                                val otherR = if (hc.row == r) r + 1 else r - 1
+                                val otherVal = grid[otherR][c]
+                                if (otherVal != CellType.EMPTY) {
+                                    val isBroken = when (hc.type) {
+                                        ConstraintType.EQUALS -> wrongVal != otherVal
+                                        ConstraintType.CROSS -> wrongVal == otherVal
+                                    }
+                                    if (isBroken) {
+                                        val otherEmoji = if (otherVal == CellType.SUN) "🟡" else "🌙"
+                                        val symbol = if (hc.type == ConstraintType.EQUALS) "=" else "×"
+                                        val requirementText = if (hc.type == ConstraintType.EQUALS) "equal to" else "different from"
+                                        val explanation = "Constraint Mistake detected!\n\n" +
+                                            "You placed $wrongEmoji at Row ${r+1}, Column ${c+1}, which is connected by '$symbol' to the $otherEmoji at Row ${otherR+1}.\n\n" +
+                                            "This breaks the rule that they must be $requirementText each other! Therefore, this cell must be corrected to $correctEmoji."
+                                        
+                                        userMistakes.add(PendingHintInfo(r, c, correctVal, setOf(Pair(otherR, c)), explanation))
+                                        explained = true
+                                        break
+                                    }
+                                }
+                            }
+                        }
+                        if (explained) continue
+                        
+                        // Check C: Does it create 3 consecutive identical symbols horizontally?
+                        var tripleFound = false
+                        // Case 1: [this, c+1, c+2]
+                        if (c <= 3 && grid[r][c+1] == wrongVal && grid[r][c+2] == wrongVal) {
+                            tripleFound = true
+                            val explanation = "Triple Consecutive Mistake!\n\n" +
+                                "Placing $wrongEmoji at Row ${r+1}, Column ${c+1} creates three consecutive identical symbols with Columns ${c+2} and ${c+3}.\n\n" +
+                                "Since no three identical symbols can be adjacent, this cell must be corrected to $correctEmoji."
+                            userMistakes.add(PendingHintInfo(r, c, correctVal, setOf(Pair(r, c+1), Pair(r, c+2)), explanation))
+                        }
+                        // Case 2: [c-1, this, c+1]
+                        else if (c >= 1 && c <= 4 && grid[r][c-1] == wrongVal && grid[r][c+1] == wrongVal) {
+                            tripleFound = true
+                            val explanation = "Triple Consecutive Mistake!\n\n" +
+                                "Placing $wrongEmoji at Row ${r+1}, Column ${c+1} creates three consecutive identical symbols with Columns ${c} and ${c+2}.\n\n" +
+                                "Since no three identical symbols can be adjacent, this cell must be corrected to $correctEmoji."
+                            userMistakes.add(PendingHintInfo(r, c, correctVal, setOf(Pair(r, c-1), Pair(r, c+1)), explanation))
+                        }
+                        // Case 3: [c-2, c-1, this]
+                        else if (c >= 2 && grid[r][c-2] == wrongVal && grid[r][c-1] == wrongVal) {
+                            tripleFound = true
+                            val explanation = "Triple Consecutive Mistake!\n\n" +
+                                "Placing $wrongEmoji at Row ${r+1}, Column ${c+1} creates three consecutive identical symbols with Columns ${c-1} and ${c}.\n\n" +
+                                "Since no three identical symbols can be adjacent, this cell must be corrected to $correctEmoji."
+                            userMistakes.add(PendingHintInfo(r, c, correctVal, setOf(Pair(r, c-2), Pair(r, c-1)), explanation))
+                        }
+                        if (tripleFound) continue
+                        
+                        // Check D: Does it create 3 consecutive identical symbols vertically?
+                        // Case 1: [this, r+1, r+2]
+                        if (r <= 3 && grid[r+1][c] == wrongVal && grid[r+2][c] == wrongVal) {
+                            tripleFound = true
+                            val explanation = "Triple Consecutive Mistake!\n\n" +
+                                "Placing $wrongEmoji at Row ${r+1}, Column ${c+1} creates three consecutive identical symbols with Rows ${r+2} and ${r+3}.\n\n" +
+                                "Since no three identical symbols can be adjacent, this cell must be corrected to $correctEmoji."
+                            userMistakes.add(PendingHintInfo(r, c, correctVal, setOf(Pair(r+1, c), Pair(r+2, c)), explanation))
+                        }
+                        // Case 2: [r-1, this, r+1]
+                        else if (r >= 1 && r <= 4 && grid[r-1][c] == wrongVal && grid[r+1][c] == wrongVal) {
+                            tripleFound = true
+                            val explanation = "Triple Consecutive Mistake!\n\n" +
+                                "Placing $wrongEmoji at Row ${r+1}, Column ${c+1} creates three consecutive identical symbols with Rows ${r} and ${r+2}.\n\n" +
+                                "Since no three identical symbols can be adjacent, this cell must be corrected to $correctEmoji."
+                            userMistakes.add(PendingHintInfo(r, c, correctVal, setOf(Pair(r-1, c), Pair(r+1, c)), explanation))
+                        }
+                        // Case 3: [r-2, r-1, this]
+                        else if (r >= 2 && grid[r-2][c] == wrongVal && grid[r-1][c] == wrongVal) {
+                            tripleFound = true
+                            val explanation = "Triple Consecutive Mistake!\n\n" +
+                                "Placing $wrongEmoji at Row ${r+1}, Column ${c+1} creates three consecutive identical symbols with Rows ${r-1} and ${r}.\n\n" +
+                                "Since no three identical symbols can be adjacent, this cell must be corrected to $correctEmoji."
+                            userMistakes.add(PendingHintInfo(r, c, correctVal, setOf(Pair(r-2, c), Pair(r-1, c)), explanation))
+                        }
+                        if (tripleFound) continue
+                        
+                        // Check E: Row balance exceeded
+                        val rowCount = grid[r].count { it == wrongVal }
+                        if (rowCount > 3) {
+                            val sources = grid[r].mapIndexedNotNull { i, type -> if (type == wrongVal && i != c) Pair(r, i) else null }.toSet()
+                            val countLabel = if (wrongVal == CellType.SUN) "Suns (🟡)" else "Moons (🌙)"
+                            val explanation = "Row Balance Mistake!\n\n" +
+                                "You placed $wrongEmoji at Row ${r+1}, Column ${c+1}, but this row already has $rowCount $countLabel.\n\n" +
+                                "Since each row must have exactly 3 Suns and 3 Moons, this cell must be corrected to $correctEmoji."
+                            userMistakes.add(PendingHintInfo(r, c, correctVal, sources, explanation))
+                            continue
+                        }
+                        
+                        // Check F: Col balance exceeded
+                        val colCount = (0 until 6).count { grid[it][c] == wrongVal }
+                        if (colCount > 3) {
+                            val sources = (0 until 6).mapNotNull { if (grid[it][c] == wrongVal && it != r) Pair(it, c) else null }.toSet()
+                            val countLabel = if (wrongVal == CellType.SUN) "Suns (🟡)" else "Moons (🌙)"
+                            val explanation = "Column Balance Mistake!\n\n" +
+                                "You placed $wrongEmoji at Row ${r+1}, Column ${c+1}, but this column already has $colCount $countLabel.\n\n" +
+                                "Since each column must have exactly 3 Suns and 3 Moons, this cell must be corrected to $correctEmoji."
+                            userMistakes.add(PendingHintInfo(r, c, correctVal, sources, explanation))
+                            continue
+                        }
+                        
+                        // Check G: Indirect mistake (requires looking ahead / trace contradiction)
+                        val traceResult = traceContradictionChain(r, c, wrongVal)
+                        if (traceResult != null) {
+                            val (steps, contradiction) = traceResult
+                            val explanation = formatContradictionTraceForMove(r, c, wrongVal, steps, contradiction, correctVal)
+                            userMistakes.add(PendingHintInfo(r, c, correctVal, emptySet(), explanation))
+                        } else {
+                            val explanation = "Logic Mistake Detected!\n\n" +
+                                "Your placed symbol $wrongEmoji at Row ${r+1}, Column ${c+1} is incorrect and leads to an eventual contradiction.\n\n" +
+                                "Therefore, this cell must be corrected to $correctEmoji."
+                            userMistakes.add(PendingHintInfo(r, c, correctVal, emptySet(), explanation))
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (userMistakes.isNotEmpty()) {
+            val chosenMistake = userMistakes.firstOrNull { it.sources.isNotEmpty() } ?: userMistakes.first()
+            setPendingHint(chosenMistake)
+            return
+        }
+
+        // Collect candidates for visual Sandwich & Pair Rules (easiest for humans to spot)
+        val simpleCandidates = mutableListOf<PendingHintInfo>()
         
         // 1. Sandwich Rule (Row)
         for (r in 0 until 6) {
             for (c in 0 until 4) {
                 if (grid[r][c] != CellType.EMPTY && grid[r][c] == grid[r][c+2] && grid[r][c+1] == CellType.EMPTY) {
-                    applyHint(r, c+1, getOpposite(grid[r][c]), 
-                        setOf(Pair(r, c), Pair(r, c+2)), 
-                        "Sandwich Rule: Cannot place 3 similar symbols consecutively, so the opposite symbol must be placed between them.")
-                    return
+                    val solVal = currentLevel.solution[r][c+1]
+                    val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                    simpleCandidates.add(
+                        PendingHintInfo(
+                            r, c+1, solVal,
+                            setOf(Pair(r, c), Pair(r, c+2)),
+                            "No more than 2 🟡 or 🌙 may be next to each other, either vertically or horizontally.\n\nTherefore the highlighted cell must be a $emoji."
+                        )
+                    )
                 }
             }
         }
+        
         // 1. Sandwich Rule (Col)
         for (c in 0 until 6) {
             for (r in 0 until 4) {
                 if (grid[r][c] != CellType.EMPTY && grid[r][c] == grid[r+2][c] && grid[r+1][c] == CellType.EMPTY) {
-                    applyHint(r+1, c, getOpposite(grid[r][c]), 
-                        setOf(Pair(r, c), Pair(r+2, c)), 
-                        "Sandwich Rule: Cannot place 3 similar symbols consecutively, so the opposite symbol must be placed between them.")
-                    return
+                    val solVal = currentLevel.solution[r+1][c]
+                    val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                    simpleCandidates.add(
+                        PendingHintInfo(
+                            r+1, c, solVal,
+                            setOf(Pair(r, c), Pair(r+2, c)),
+                            "No more than 2 🟡 or 🌙 may be next to each other, either vertically or horizontally.\n\nTherefore the highlighted cell must be a $emoji."
+                        )
+                    )
                 }
             }
         }
@@ -231,12 +624,26 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
             for (c in 0 until 5) {
                 if (grid[r][c] != CellType.EMPTY && grid[r][c] == grid[r][c+1]) {
                     if (c > 0 && grid[r][c-1] == CellType.EMPTY) {
-                        applyHint(r, c-1, getOpposite(grid[r][c]), setOf(Pair(r, c), Pair(r, c+1)), "Pair Rule: Cannot place 3 similar symbols consecutively.")
-                        return
+                        val solVal = currentLevel.solution[r][c-1]
+                        val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                        simpleCandidates.add(
+                            PendingHintInfo(
+                                r, c-1, solVal,
+                                setOf(Pair(r, c), Pair(r, c+1)),
+                                "No more than 2 🟡 or 🌙 may be next to each other, either vertically or horizontally.\n\nTherefore the highlighted cell must be a $emoji."
+                            )
+                        )
                     }
                     if (c < 4 && grid[r][c+2] == CellType.EMPTY) {
-                        applyHint(r, c+2, getOpposite(grid[r][c]), setOf(Pair(r, c), Pair(r, c+1)), "Pair Rule: Cannot place 3 similar symbols consecutively.")
-                        return
+                        val solVal = currentLevel.solution[r][c+2]
+                        val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                        simpleCandidates.add(
+                            PendingHintInfo(
+                                r, c+2, solVal,
+                                setOf(Pair(r, c), Pair(r, c+1)),
+                                "No more than 2 🟡 or 🌙 may be next to each other, either vertically or horizontally.\n\nTherefore the highlighted cell must be a $emoji."
+                            )
+                        )
                     }
                 }
             }
@@ -247,135 +654,702 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
             for (r in 0 until 5) {
                 if (grid[r][c] != CellType.EMPTY && grid[r][c] == grid[r+1][c]) {
                     if (r > 0 && grid[r-1][c] == CellType.EMPTY) {
-                        applyHint(r-1, c, getOpposite(grid[r][c]), setOf(Pair(r, c), Pair(r+1, c)), "Pair Rule: Cannot place 3 similar symbols consecutively.")
-                        return
+                        val solVal = currentLevel.solution[r-1][c]
+                        val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                        simpleCandidates.add(
+                            PendingHintInfo(
+                                r-1, c, solVal,
+                                setOf(Pair(r, c), Pair(r+1, c)),
+                                "No more than 2 🟡 or 🌙 may be next to each other, either vertically or horizontally.\n\nTherefore the highlighted cell must be a $emoji."
+                            )
+                        )
                     }
                     if (r < 4 && grid[r+2][c] == CellType.EMPTY) {
-                        applyHint(r+2, c, getOpposite(grid[r][c]), setOf(Pair(r, c), Pair(r+1, c)), "Pair Rule: Cannot place 3 similar symbols consecutively.")
-                        return
+                        val solVal = currentLevel.solution[r+2][c]
+                        val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                        simpleCandidates.add(
+                            PendingHintInfo(
+                                r+2, c, solVal,
+                                setOf(Pair(r, c), Pair(r+1, c)),
+                                "No more than 2 🟡 or 🌙 may be next to each other, either vertically or horizontally.\n\nTherefore the highlighted cell must be a $emoji."
+                            )
+                        )
                     }
                 }
             }
         }
 
-        // 3. Balance Rule (Row)
-        for (r in 0 until 6) {
-            val suns = grid[r].count { it == CellType.SUN }
-            val moons = grid[r].count { it == CellType.MOON }
-            if (suns == 3 && moons < 3) {
-                val emptyCol = grid[r].indexOfFirst { it == CellType.EMPTY }
-                if (emptyCol != -1) {
-                    applyHint(r, emptyCol, CellType.MOON, grid[r].mapIndexedNotNull { i, cellType -> if (cellType == CellType.SUN) Pair(r, i) else null }.toSet(), "Balance Rule: The row already has 3 suns, so the remaining cells must be moons.")
-                    return
-                }
-            }
-            if (moons == 3 && suns < 3) {
-                val emptyCol = grid[r].indexOfFirst { it == CellType.EMPTY }
-                if (emptyCol != -1) {
-                    applyHint(r, emptyCol, CellType.SUN, grid[r].mapIndexedNotNull { i, cellType -> if (cellType == CellType.MOON) Pair(r, i) else null }.toSet(), "Balance Rule: The row already has 3 moons, so the remaining cells must be suns.")
-                    return
-                }
-            }
-        }
-        
-        // 3. Balance Rule (Col)
-        for (c in 0 until 6) {
-            val suns = (0 until 6).count { grid[it][c] == CellType.SUN }
-            val moons = (0 until 6).count { grid[it][c] == CellType.MOON }
-            if (suns == 3 && moons < 3) {
-                val emptyRow = (0 until 6).firstOrNull { grid[it][c] == CellType.EMPTY }
-                if (emptyRow != null) {
-                    val sources = (0 until 6).mapNotNull { if (grid[it][c] == CellType.SUN) Pair(it, c) else null }.toSet()
-                    applyHint(emptyRow, c, CellType.MOON, sources, "Balance Rule: The column already has 3 suns, so the remaining cells must be moons.")
-                    return
-                }
-            }
-            if (moons == 3 && suns < 3) {
-                val emptyRow = (0 until 6).firstOrNull { grid[it][c] == CellType.EMPTY }
-                if (emptyRow != null) {
-                    val sources = (0 until 6).mapNotNull { if (grid[it][c] == CellType.MOON) Pair(it, c) else null }.toSet()
-                    applyHint(emptyRow, c, CellType.SUN, sources, "Balance Rule: The column already has 3 moons, so the remaining cells must be suns.")
-                    return
-                }
-            }
+        if (simpleCandidates.isNotEmpty()) {
+            setPendingHint(simpleCandidates.random())
+            return
         }
 
-        // 4. Relation Rules (vConstraints)
+        // 3. Relation Rules (vConstraints & hConstraints)
+        val relationCandidates = mutableListOf<PendingHintInfo>()
         for (vc in currentLevel.vConstraints) {
             val r = vc.row
             val c = vc.col
             val left = grid[r][c]
             val right = grid[r][c+1]
             if (left != CellType.EMPTY && right == CellType.EMPTY) {
-                val type = if (vc.type == ConstraintType.EQUALS) left else getOpposite(left)
-                applyHint(r, c+1, type, setOf(Pair(r, c)), if (vc.type == ConstraintType.EQUALS) "Relation Rule: The cells are connected by '=', so they must be the same." else "Relation Rule: The cells are connected by '×', so they must be different.")
-                return
+                val solVal = currentLevel.solution[r][c+1]
+                val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                val symbol = if (vc.type == ConstraintType.EQUALS) "=" else "×"
+                val logicText = if (vc.type == ConstraintType.EQUALS) "equal" else "different"
+                relationCandidates.add(
+                    PendingHintInfo(
+                        r, c+1, solVal,
+                        setOf(Pair(r, vc.col)),
+                        "Relation Rule: The cells are connected by '$symbol', so they must be $logicText.\n\nTherefore the highlighted cell must be a $emoji."
+                    )
+                )
             }
             if (left == CellType.EMPTY && right != CellType.EMPTY) {
-                val type = if (vc.type == ConstraintType.EQUALS) right else getOpposite(right)
-                applyHint(r, c, type, setOf(Pair(r, c+1)), if (vc.type == ConstraintType.EQUALS) "Relation Rule: The cells are connected by '=', so they must be the same." else "Relation Rule: The cells are connected by '×', so they must be different.")
-                return
+                val solVal = currentLevel.solution[r][c]
+                val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                val symbol = if (vc.type == ConstraintType.EQUALS) "=" else "×"
+                val logicText = if (vc.type == ConstraintType.EQUALS) "equal" else "different"
+                relationCandidates.add(
+                    PendingHintInfo(
+                        r, c, solVal,
+                        setOf(Pair(r, vc.col + 1)),
+                        "Relation Rule: The cells are connected by '$symbol', so they must be $logicText.\n\nTherefore the highlighted cell must be a $emoji."
+                    )
+                )
             }
         }
-        
-        // 4. Relation Rules (hConstraints)
         for (hc in currentLevel.hConstraints) {
             val r = hc.row
             val c = hc.col
             val top = grid[r][c]
             val bottom = grid[r+1][c]
             if (top != CellType.EMPTY && bottom == CellType.EMPTY) {
-                val type = if (hc.type == ConstraintType.EQUALS) top else getOpposite(top)
-                applyHint(r+1, c, type, setOf(Pair(r, c)), if (hc.type == ConstraintType.EQUALS) "Relation Rule: The cells are connected by '=', so they must be the same." else "Relation Rule: The cells are connected by '×', so they must be different.")
-                return
+                val solVal = currentLevel.solution[r+1][c]
+                val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                val symbol = if (hc.type == ConstraintType.EQUALS) "=" else "×"
+                val logicText = if (hc.type == ConstraintType.EQUALS) "equal" else "different"
+                relationCandidates.add(
+                    PendingHintInfo(
+                        r+1, c, solVal,
+                        setOf(Pair(hc.row, c)),
+                        "Relation Rule: The cells are connected by '$symbol', so they must be $logicText.\n\nTherefore the highlighted cell must be a $emoji."
+                    )
+                )
             }
             if (top == CellType.EMPTY && bottom != CellType.EMPTY) {
-                val type = if (hc.type == ConstraintType.EQUALS) bottom else getOpposite(bottom)
-                applyHint(r, c, type, setOf(Pair(r+1, c)), if (hc.type == ConstraintType.EQUALS) "Relation Rule: The cells are connected by '=', so they must be the same." else "Relation Rule: The cells are connected by '×', so they must be different.")
-                return
+                val solVal = currentLevel.solution[r][c]
+                val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                val symbol = if (hc.type == ConstraintType.EQUALS) "=" else "×"
+                val logicText = if (hc.type == ConstraintType.EQUALS) "equal" else "different"
+                relationCandidates.add(
+                    PendingHintInfo(
+                        r, c, solVal,
+                        setOf(Pair(hc.row + 1, c)),
+                        "Relation Rule: The cells are connected by '$symbol', so they must be $logicText.\n\nTherefore the highlighted cell must be a $emoji."
+                    )
+                )
             }
         }
 
-        // Fallback for advanced thinking
+        if (relationCandidates.isNotEmpty()) {
+            setPendingHint(relationCandidates.random())
+            return
+        }
+
+        // 4. Balance Rule (Row & Col)
+        val balanceCandidates = mutableListOf<PendingHintInfo>()
         for (r in 0 until 6) {
-            for (c in 0 until 6) {
-                if (grid[r][c] == CellType.EMPTY) {
-                    val sol = currentLevel.solution[r][c]
-                    val typeStr = if (sol == CellType.SUN) "Sun" else "Moon"
-                    applyHint(r, c, sol, emptySet(), "Advanced logic deduction: by testing possibilities, placing the opposite leads to a contradiction. So it must be $typeStr.")
-                    return
-                } else if (grid[r][c] != currentLevel.solution[r][c] && currentLevel.initial[r][c] == CellType.EMPTY) {
-                     val sol = currentLevel.solution[r][c]
-                     applyHint(r, c, sol, emptySet(), "This placed cell is incorrect and leads to a contradiction.")
-                     return
+            val suns = grid[r].count { it == CellType.SUN }
+            val moons = grid[r].count { it == CellType.MOON }
+            if (suns == 3 && moons < 3) {
+                val emptyCols = grid[r].mapIndexedNotNull { i, cellType -> if (cellType == CellType.EMPTY) i else null }
+                if (emptyCols.isNotEmpty()) {
+                    val c = emptyCols.random()
+                    val solVal = currentLevel.solution[r][c]
+                    val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                    val sources = grid[r].mapIndexedNotNull { i, cellType -> if (cellType == CellType.SUN) Pair(r, i) else null }.toSet()
+                    balanceCandidates.add(
+                        PendingHintInfo(
+                            r, c, solVal, sources,
+                            "Each row and column must contain an equal number of 🟡 and 🌙 (3 of each).\n\nTherefore the highlighted cell must be a $emoji."
+                        )
+                    )
+                }
+            }
+            if (moons == 3 && suns < 3) {
+                val emptyCols = grid[r].mapIndexedNotNull { i, cellType -> if (cellType == CellType.EMPTY) i else null }
+                if (emptyCols.isNotEmpty()) {
+                    val c = emptyCols.random()
+                    val solVal = currentLevel.solution[r][c]
+                    val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                    val sources = grid[r].mapIndexedNotNull { i, cellType -> if (cellType == CellType.MOON) Pair(r, i) else null }.toSet()
+                    balanceCandidates.add(
+                        PendingHintInfo(
+                            r, c, solVal, sources,
+                            "Each row and column must contain an equal number of 🟡 and 🌙 (3 of each).\n\nTherefore the highlighted cell must be a $emoji."
+                        )
+                    )
                 }
             }
         }
+        
+        for (c in 0 until 6) {
+            val suns = (0 until 6).count { grid[it][c] == CellType.SUN }
+            val moons = (0 until 6).count { grid[it][c] == CellType.MOON }
+            if (suns == 3 && moons < 3) {
+                val emptyRows = (0 until 6).filter { grid[it][c] == CellType.EMPTY }
+                if (emptyRows.isNotEmpty()) {
+                    val r = emptyRows.random()
+                    val solVal = currentLevel.solution[r][c]
+                    val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                    val sources = (0 until 6).mapNotNull { if (grid[it][c] == CellType.SUN) Pair(it, c) else null }.toSet()
+                    balanceCandidates.add(
+                        PendingHintInfo(
+                            r, c, solVal, sources,
+                            "Each row and column must contain an equal number of 🟡 and 🌙 (3 of each).\n\nTherefore the highlighted cell must be a $emoji."
+                        )
+                    )
+                }
+            }
+            if (moons == 3 && suns < 3) {
+                val emptyRows = (0 until 6).filter { grid[it][c] == CellType.EMPTY }
+                if (emptyRows.isNotEmpty()) {
+                    val r = emptyRows.random()
+                    val solVal = currentLevel.solution[r][c]
+                    val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                    val sources = (0 until 6).mapNotNull { if (grid[it][c] == CellType.MOON) Pair(it, c) else null }.toSet()
+                    balanceCandidates.add(
+                        PendingHintInfo(
+                            r, c, solVal, sources,
+                            "Each row and column must contain an equal number of 🟡 and 🌙 (3 of each).\n\nTherefore the highlighted cell must be a $emoji."
+                        )
+                    )
+                }
+            }
+        }
+
+        if (balanceCandidates.isNotEmpty()) {
+            setPendingHint(balanceCandidates.random())
+            return
+        }
+
+        // 5. Lookahead deduction tracing
+        for (r in 0 until 6) {
+            for (c in 0 until 6) {
+                if (grid[r][c] == CellType.EMPTY) {
+                    val solVal = currentLevel.solution[r][c]
+                    val oppositeVal = getOpposite(solVal)
+                    val traceResult = traceContradictionChain(r, c, oppositeVal)
+                    if (traceResult != null) {
+                        val (steps, contradiction) = traceResult
+                        val explanation = formatContradictionTrace(r, c, oppositeVal, steps, contradiction, solVal)
+                        setPendingHint(
+                            PendingHintInfo(
+                                r, c, solVal, emptySet(),
+                                explanation
+                            )
+                        )
+                        return
+                    }
+                }
+            }
+        }
+
+        // Final candidate traceback if nothing triggered:
+        for (r in 0 until 6) {
+            for (c in 0 until 6) {
+                if (grid[r][c] == CellType.EMPTY) {
+                    val solVal = currentLevel.solution[r][c]
+                    val emoji = if (solVal == CellType.SUN) "🟡" else "🌙"
+                    setPendingHint(
+                        PendingHintInfo(
+                            r, c, solVal, emptySet(),
+                            "Deduction check: Since other rules are exhausted, this cell at Row ${r+1}, Col ${c+1} must be $emoji to complete the grid puzzle logically."
+                        )
+                    )
+                    return
+                }
+            }
+        }
+    }
+
+    private fun traceContradictionChain(startR: Int, startC: Int, assumedType: CellType): Pair<List<TraceStep>, String>? {
+        val g = Array(6) { r -> Array(6) { c -> grid[r][c] } }
+        g[startR][startC] = assumedType
+        
+        val knownCells = mutableSetOf<Pair<Int, Int>>()
+        for (r in 0 until 6) {
+            for (c in 0 until 6) {
+                if (grid[r][c] != CellType.EMPTY) {
+                    knownCells.add(Pair(r, c))
+                }
+            }
+        }
+        knownCells.add(Pair(startR, startC))
+        
+        val steps = mutableListOf<TraceStep>()
+        fun emojiOf(type: CellType) = if (type == CellType.SUN) "🟡" else "🌙"
+        
+        fun findContradiction(): String? {
+            // 1. Triple consecutive in Row
+            for (r in 0 until 6) {
+                for (c in 0 until 4) {
+                    if (g[r][c] != CellType.EMPTY && g[r][c] == g[r][c+1] && g[r][c] == g[r][c+2]) {
+                        return "Row ${r+1} would have three consecutive identical symbols (${emojiOf(g[r][c])}) at Columns ${c+1}, ${c+2}, and ${c+3}."
+                    }
+                }
+            }
+            // 2. Triple consecutive in Col
+            for (c in 0 until 6) {
+                for (r in 0 until 4) {
+                    if (g[r][c] != CellType.EMPTY && g[r][c] == g[r+1][c] && g[r][c] == g[r+2][c]) {
+                        return "Column ${c+1} would have three consecutive identical symbols (${emojiOf(g[r][c])}) at Rows ${r+1}, ${r+2}, and ${r+3}."
+                    }
+                }
+            }
+            // 3. Count in Row
+            for (r in 0 until 6) {
+                val s = g[r].count { it == CellType.SUN }
+                val m = g[r].count { it == CellType.MOON }
+                if (s > 3) return "Row ${r+1} would contain $s Suns (🟡), which exceeds the limit of exactly 3."
+                if (m > 3) return "Row ${r+1} would contain $m Moons (🌙), which exceeds the limit of exactly 3."
+            }
+            // 4. Count in Col
+            for (c in 0 until 6) {
+                val s = (0 until 6).count { g[it][c] == CellType.SUN }
+                val m = (0 until 6).count { g[it][c] == CellType.MOON }
+                if (s > 3) return "Column ${c+1} would contain $s Suns (🟡), which exceeds the limit of exactly 3."
+                if (m > 3) return "Column ${c+1} would contain $m Moons (🌙), which exceeds the limit of exactly 3."
+            }
+            // 5. Relations (vConstraints)
+            for (vc in currentLevel.vConstraints) {
+                val left = g[vc.row][vc.col]
+                val right = g[vc.row][vc.col+1]
+                if (left != CellType.EMPTY && right != CellType.EMPTY) {
+                    if (vc.type == ConstraintType.EQUALS && left != right) {
+                        return "The '=' relationship at Row ${vc.row+1} between Column ${vc.col+1} (${emojiOf(left)}) and Column ${vc.col+2} (${emojiOf(right)}) is broken."
+                    }
+                    if (vc.type == ConstraintType.CROSS && left == right) {
+                        return "The '×' relationship at Row ${vc.row+1} between Column ${vc.col+1} (${emojiOf(left)}) and Column ${vc.col+2} (${emojiOf(right)}) is broken."
+                    }
+                }
+            }
+            // 6. Relations (hConstraints)
+            for (hc in currentLevel.hConstraints) {
+                val top = g[hc.row][hc.col]
+                val bottom = g[hc.row+1][hc.col]
+                if (top != CellType.EMPTY && bottom != CellType.EMPTY) {
+                    if (hc.type == ConstraintType.EQUALS && top != bottom) {
+                        return "The '=' relationship at Column ${hc.col+1} between Row ${hc.row+1} (${emojiOf(top)}) and Row ${hc.row+2} (${emojiOf(bottom)}) is broken."
+                    }
+                    if (hc.type == ConstraintType.CROSS && top == bottom) {
+                        return "The '×' relationship at Column ${hc.col+1} between Row ${hc.row+1} (${emojiOf(top)}) and Row ${hc.row+2} (${emojiOf(bottom)}) is broken."
+                    }
+                }
+            }
+            return null
+        }
+        
+        val initialContra = findContradiction()
+        if (initialContra != null) {
+            return Pair(steps, initialContra)
+        }
+        
+        var changed = true
+        var iteration = 0
+        while (changed && iteration < 36) {
+            changed = false
+            iteration++
+            
+            // --- 1. Sandwich Rows ---
+            for (r in 0 until 6) {
+                for (c in 0 until 4) {
+                    if (g[r][c] != CellType.EMPTY && g[r][c] == g[r][c+2] && g[r][c+1] == CellType.EMPTY) {
+                        if (Pair(r, c) in knownCells && Pair(r, c+2) in knownCells) {
+                            val derived = getOpposite(g[r][c])
+                            g[r][c+1] = derived
+                            knownCells.add(Pair(r, c+1))
+                            steps.add(
+                                TraceStep(
+                                    r, c+1, derived,
+                                    "Sandwich Rule: Row ${r+1}, Columns ${c+1} and ${c+3} contain identical symbols, forcing the center cell to be ${emojiOf(derived)}."
+                                )
+                            )
+                            changed = true
+                            break
+                        }
+                    }
+                }
+                if (changed) break
+            }
+            if (changed) {
+                val contra = findContradiction()
+                if (contra != null) return Pair(steps, contra)
+                continue
+            }
+            
+            // --- 2. Sandwich Cols ---
+            for (c in 0 until 6) {
+                for (r in 0 until 4) {
+                    if (g[r][c] != CellType.EMPTY && g[r][c] == g[r+2][c] && g[r+1][c] == CellType.EMPTY) {
+                        if (Pair(r, c) in knownCells && Pair(r+2, c) in knownCells) {
+                            val derived = getOpposite(g[r][c])
+                            g[r+1][c] = derived
+                            knownCells.add(Pair(r+1, c))
+                            steps.add(
+                                TraceStep(
+                                    r+1, c, derived,
+                                    "Sandwich Rule: Column ${c+1}, Rows ${r+1} and ${r+3} contain identical symbols, forcing the center cell to be ${emojiOf(derived)}."
+                                )
+                            )
+                            changed = true
+                            break
+                        }
+                    }
+                }
+                if (changed) break
+            }
+            if (changed) {
+                val contra = findContradiction()
+                if (contra != null) return Pair(steps, contra)
+                continue
+            }
+            
+            // --- 3. Pair Rows ---
+            for (r in 0 until 6) {
+                for (c in 0 until 5) {
+                    if (g[r][c] != CellType.EMPTY && g[r][c] == g[r][c+1]) {
+                        if (Pair(r, c) in knownCells && Pair(r, c+1) in knownCells) {
+                            if (c > 0 && g[r][c-1] == CellType.EMPTY) {
+                                val derived = getOpposite(g[r][c])
+                                g[r][c-1] = derived
+                                knownCells.add(Pair(r, c-1))
+                                steps.add(
+                                    TraceStep(
+                                        r, c-1, derived,
+                                        "Pair Rule: Row ${r+1}, Columns ${c+1} and ${c+2} contain adjacent identical symbols, forcing the preceding cell to be ${emojiOf(derived)}."
+                                    )
+                                )
+                                changed = true
+                                break
+                            }
+                            if (c < 4 && g[r][c+2] == CellType.EMPTY) {
+                                val derived = getOpposite(g[r][c])
+                                g[r][c+2] = derived
+                                knownCells.add(Pair(r, c+2))
+                                steps.add(
+                                    TraceStep(
+                                        r, c+2, derived,
+                                        "Pair Rule: Row ${r+1}, Columns ${c+1} and ${c+2} contain adjacent identical symbols, forcing the succeeding cell to be ${emojiOf(derived)}."
+                                    )
+                                )
+                                changed = true
+                                break
+                            }
+                        }
+                    }
+                }
+                if (changed) break
+            }
+            if (changed) {
+                val contra = findContradiction()
+                if (contra != null) return Pair(steps, contra)
+                continue
+            }
+            
+            // --- 4. Pair Cols ---
+            for (c in 0 until 6) {
+                for (r in 0 until 5) {
+                    if (g[r][c] != CellType.EMPTY && g[r][c] == g[r+1][c]) {
+                        if (Pair(r, c) in knownCells && Pair(r+1, c) in knownCells) {
+                            if (r > 0 && g[r-1][c] == CellType.EMPTY) {
+                                val derived = getOpposite(g[r][c])
+                                g[r-1][c] = derived
+                                knownCells.add(Pair(r-1, c))
+                                steps.add(
+                                    TraceStep(
+                                        r-1, c, derived,
+                                        "Pair Rule: Column ${c+1}, Rows ${r+1} and ${r+2} contain adjacent identical symbols, forcing the upper cell to be ${emojiOf(derived)}."
+                                    )
+                                )
+                                changed = true
+                                break
+                            }
+                            if (r < 4 && g[r+2][c] == CellType.EMPTY) {
+                                val derived = getOpposite(g[r][c])
+                                g[r+2][c] = derived
+                                knownCells.add(Pair(r+2, c))
+                                steps.add(
+                                    TraceStep(
+                                        r+2, c, derived,
+                                        "Pair Rule: Column ${c+1}, Rows ${r+1} and ${r+2} contain adjacent identical symbols, forcing the lower cell to be ${emojiOf(derived)}."
+                                    )
+                                )
+                                changed = true
+                                break
+                            }
+                        }
+                    }
+                }
+                if (changed) break
+            }
+            if (changed) {
+                val contra = findContradiction()
+                if (contra != null) return Pair(steps, contra)
+                continue
+            }
+            
+            // --- 5. Relations (vConstraints) ---
+            for (vc in currentLevel.vConstraints) {
+                val r = vc.row
+                val c = vc.col
+                val symbol = if (vc.type == ConstraintType.EQUALS) "=" else "×"
+                if (g[r][c] != CellType.EMPTY && g[r][c+1] == CellType.EMPTY && Pair(r, c) in knownCells) {
+                    val derived = if (vc.type == ConstraintType.EQUALS) g[r][c] else getOpposite(g[r][c])
+                    g[r][c+1] = derived
+                    knownCells.add(Pair(r, c+1))
+                    steps.add(
+                        TraceStep(
+                            r, c+1, derived,
+                            "Constraint Rule: Row ${r+1}, Column ${c+1} and Column ${2+c} are connected by '$symbol', forcing Column ${c+2} to be ${emojiOf(derived)}."
+                        )
+                    )
+                    changed = true
+                    break
+                }
+                if (g[r][c] == CellType.EMPTY && g[r][c+1] != CellType.EMPTY && Pair(r, c+1) in knownCells) {
+                    val derived = if (vc.type == ConstraintType.EQUALS) g[r][c+1] else getOpposite(g[r][c+1])
+                    g[r][c] = derived
+                    knownCells.add(Pair(r, c))
+                    steps.add(
+                        TraceStep(
+                            r, c, derived,
+                            "Constraint Rule: Row ${r+1}, Column ${c+1} and Column ${2+c} are connected by '$symbol', forcing Column ${c+1} to be ${emojiOf(derived)}."
+                        )
+                    )
+                    changed = true
+                    break
+                }
+            }
+            if (changed) {
+                val contra = findContradiction()
+                if (contra != null) return Pair(steps, contra)
+                continue
+            }
+            
+            // --- 6. Relations (hConstraints) ---
+            for (hc in currentLevel.hConstraints) {
+                val r = hc.row
+                val c = hc.col
+                val symbol = if (hc.type == ConstraintType.EQUALS) "=" else "×"
+                if (g[r][c] != CellType.EMPTY && g[r+1][c] == CellType.EMPTY && Pair(r, c) in knownCells) {
+                    val derived = if (hc.type == ConstraintType.EQUALS) g[r][c] else getOpposite(g[r][c])
+                    g[r+1][c] = derived
+                    knownCells.add(Pair(r+1, c))
+                    steps.add(
+                        TraceStep(
+                            r+1, c, derived,
+                            "Constraint Rule: Row ${r+1} and Row ${r+2} are connected by '$symbol' in Column ${c+1}, forcing Row ${r+2} Column ${c+1} to be ${emojiOf(derived)}."
+                        )
+                    )
+                    changed = true
+                    break
+                }
+                if (g[r][c] == CellType.EMPTY && g[r+1][c] != CellType.EMPTY && Pair(r+1, c) in knownCells) {
+                    val derived = if (hc.type == ConstraintType.EQUALS) g[r+1][c] else getOpposite(g[r+1][c])
+                    g[r][c] = derived
+                    knownCells.add(Pair(r, c))
+                    steps.add(
+                        TraceStep(
+                            r, c, derived,
+                            "Constraint Rule: Row ${r+1} and Row ${r+2} are connected by '$symbol' in Column ${c+1}, forcing Row ${r+1} Column ${c+1} to be ${emojiOf(derived)}."
+                        )
+                    )
+                    changed = true
+                    break
+                }
+            }
+            if (changed) {
+                val contra = findContradiction()
+                if (contra != null) return Pair(steps, contra)
+                continue
+            }
+            
+            // --- 7. Balance Rule (Rows) ---
+            for (r in 0 until 6) {
+                val sunCols = (0 until 6).filter { Pair(r, it) in knownCells && g[r][it] == CellType.SUN }
+                val moonCols = (0 until 6).filter { Pair(r, it) in knownCells && g[r][it] == CellType.MOON }
+                
+                if (sunCols.size == 3) {
+                    val emptyCols = (0 until 6).filter { g[r][it] == CellType.EMPTY }
+                    if (emptyCols.isNotEmpty()) {
+                        val firstEmpty = emptyCols.first()
+                        g[r][firstEmpty] = CellType.MOON
+                        knownCells.add(Pair(r, firstEmpty))
+                        steps.add(
+                            TraceStep(
+                                r, firstEmpty, CellType.MOON,
+                                "Balance Rule: Row ${r+1} already contains 3 Suns, forcing remaining empty cells including Column ${firstEmpty+1} to be 🌙."
+                            )
+                        )
+                        changed = true
+                        break
+                    }
+                }
+                if (moonCols.size == 3) {
+                    val emptyCols = (0 until 6).filter { g[r][it] == CellType.EMPTY }
+                    if (emptyCols.isNotEmpty()) {
+                        val firstEmpty = emptyCols.first()
+                        g[r][firstEmpty] = CellType.SUN
+                        knownCells.add(Pair(r, firstEmpty))
+                        steps.add(
+                            TraceStep(
+                                r, firstEmpty, CellType.SUN,
+                                "Balance Rule: Row ${r+1} already contains 3 Moons, forcing remaining empty cells including Column ${firstEmpty+1} to be 🟡."
+                            )
+                        )
+                        changed = true
+                        break
+                    }
+                }
+            }
+            if (changed) {
+                val contra = findContradiction()
+                if (contra != null) return Pair(steps, contra)
+                continue
+            }
+            
+            // --- 8. Balance Rule (Cols) ---
+            for (c in 0 until 6) {
+                val sunRows = (0 until 6).filter { Pair(it, c) in knownCells && g[it][c] == CellType.SUN }
+                val moonRows = (0 until 6).filter { Pair(it, c) in knownCells && g[it][c] == CellType.MOON }
+                
+                if (sunRows.size == 3) {
+                    val emptyRows = (0 until 6).filter { g[it][c] == CellType.EMPTY }
+                    if (emptyRows.isNotEmpty()) {
+                        val firstEmpty = emptyRows.first()
+                        g[firstEmpty][c] = CellType.MOON
+                        knownCells.add(Pair(firstEmpty, c))
+                        steps.add(
+                            TraceStep(
+                                firstEmpty, c, CellType.MOON,
+                                "Balance Rule: Column ${c+1} already contains 3 Suns, forcing remaining empty cells including Row ${firstEmpty+1} to be 🌙."
+                            )
+                        )
+                        changed = true
+                        break
+                    }
+                }
+                if (moonRows.size == 3) {
+                    val emptyRows = (0 until 6).filter { g[it][c] == CellType.EMPTY }
+                    if (emptyRows.isNotEmpty()) {
+                        val firstEmpty = emptyRows.first()
+                        g[firstEmpty][c] = CellType.SUN
+                        knownCells.add(Pair(firstEmpty, c))
+                        steps.add(
+                            TraceStep(
+                                firstEmpty, c, CellType.SUN,
+                                "Balance Rule: Column ${c+1} already contains 3 Moons, forcing remaining empty cells including Row ${firstEmpty+1} to be 🟡."
+                            )
+                        )
+                        changed = true
+                        break
+                    }
+                }
+            }
+            if (changed) {
+                val contra = findContradiction()
+                if (contra != null) return Pair(steps, contra)
+                continue
+            }
+        }
+        
+        return null
+    }
+
+    private fun formatContradictionTrace(
+        startR: Int,
+        startC: Int,
+        assumedVal: CellType,
+        steps: List<TraceStep>,
+        contradiction: String,
+        correctVal: CellType
+    ): String {
+        val startEmoji = if (assumedVal == CellType.SUN) "🟡" else "🌙"
+        val correctEmoji = if (correctVal == CellType.SUN) "🟡" else "🌙"
+        val sb = StringBuilder()
+        sb.append("Deep Logic Explanation:\n")
+        sb.append("If we temporarily place $startEmoji at Row ${startR+1}, Column ${startC+1}:\n\n")
+        
+        steps.forEachIndexed { index, step ->
+            val stepEmoji = if (step.type == CellType.SUN) "🟡" else "🌙"
+            sb.append("${index + 1}. First, this forces $stepEmoji at Row ${step.r+1}, Col ${step.c+1}:\n")
+            sb.append("   → ${step.reason}\n\n")
+        }
+        
+        sb.append("🔴 Contradiction reached!\n")
+        sb.append("$contradiction\n\n")
+        sb.append("Therefore, this cell must be $correctEmoji.")
+        return sb.toString()
+    }
+
+    private fun formatContradictionTraceForMove(
+        startR: Int,
+        startC: Int,
+        userVal: CellType,
+        steps: List<TraceStep>,
+        contradiction: String,
+        correctVal: CellType
+    ): String {
+        val userEmoji = if (userVal == CellType.SUN) "🟡" else "🌙"
+        val correctEmoji = if (correctVal == CellType.SUN) "🟡" else "🌙"
+        val sb = StringBuilder()
+        sb.append("Mistake Analysis:\n")
+        sb.append("Your placed symbol $userEmoji at Row ${startR+1}, Column ${startC+1} leads directly to a contradiction:\n\n")
+        
+        steps.forEachIndexed { index, step ->
+            val stepEmoji = if (step.type == CellType.SUN) "🟡" else "🌙"
+            sb.append("${index + 1}. This forces $stepEmoji at Row ${step.r+1}, Col ${step.c+1}:\n")
+            sb.append("   → ${step.reason}\n\n")
+        }
+        
+        sb.append("🔴 Contradiction reached!\n")
+        sb.append("$contradiction\n\n")
+        sb.append("Therefore, this cell must be corrected to $correctEmoji.")
+        return sb.toString()
     }
     
     private fun saveHistory() {
         moveHistory.add(grid.map { it.toList() })
     }
 
-    fun getErrorCells(): Set<Pair<Int, Int>> {
+    fun getErrorCellsWithGrid(targetGrid: List<List<CellType>>): Set<Pair<Int, Int>> {
         val errors = mutableSetOf<Pair<Int, Int>>()
         for (r in 0 until 6) {
-            val sCount = grid[r].count { it == CellType.SUN }
-            val mCount = grid[r].count { it == CellType.MOON }
+            if (r >= targetGrid.size) continue
+            val sCount = targetGrid[r].count { it == CellType.SUN }
+            val mCount = targetGrid[r].count { it == CellType.MOON }
             if (sCount > 3 || mCount > 3) {
-                for (c in 0 until 6) if (grid[r][c] != CellType.EMPTY) errors.add(Pair(r, c))
+                for (c in 0 until 6) {
+                    if (c < targetGrid[r].size && targetGrid[r][c] != CellType.EMPTY) {
+                        errors.add(Pair(r, c))
+                    }
+                }
             }
             var consS = 0
             var consM = 0
             for (c in 0 until 6) {
-                if(grid[r][c] == CellType.SUN) { consS++; consM = 0 }
-                else if(grid[r][c] == CellType.MOON) { consM++; consS = 0 }
-                else { consS = 0; consM = 0 }
-                
-                if(consS > 2 || consM > 2) {
-                     errors.add(Pair(r, c))
-                     errors.add(Pair(r, c-1))
-                     errors.add(Pair(r, c-2))
+                if (c < targetGrid[r].size) {
+                    val cellVal = targetGrid[r][c]
+                    if (cellVal == CellType.SUN) { consS++; consM = 0 }
+                    else if (cellVal == CellType.MOON) { consM++; consS = 0 }
+                    else { consS = 0; consM = 0 }
+                    
+                    if (consS > 2 || consM > 2) {
+                        errors.add(Pair(r, c))
+                        errors.add(Pair(r, c - 1))
+                        errors.add(Pair(r, c - 2))
+                    }
                 }
             }
         }
@@ -383,58 +1357,86 @@ class TangoViewModel(application: android.app.Application) : androidx.lifecycle.
             var sCount = 0
             var mCount = 0
             for (r in 0 until 6) {
-                if (grid[r][c] == CellType.SUN) sCount++
-                if (grid[r][c] == CellType.MOON) mCount++
+                if (r < targetGrid.size && c < targetGrid[r].size) {
+                    if (targetGrid[r][c] == CellType.SUN) sCount++
+                    if (targetGrid[r][c] == CellType.MOON) mCount++
+                }
             }
             if (sCount > 3 || mCount > 3) {
-                for (r in 0 until 6) if (grid[r][c] != CellType.EMPTY) errors.add(Pair(r, c))
+                for (r in 0 until 6) {
+                    if (r < targetGrid.size && c < targetGrid[r].size && targetGrid[r][c] != CellType.EMPTY) {
+                        errors.add(Pair(r, c))
+                    }
+                }
             }
             var consS = 0
             var consM = 0
             for (r in 0 until 6) {
-                if(grid[r][c] == CellType.SUN) { consS++; consM = 0 }
-                else if(grid[r][c] == CellType.MOON) { consM++; consS = 0 }
-                else { consS = 0; consM = 0 }
-                
-                if(consS > 2 || consM > 2) {
-                     errors.add(Pair(r, c))
-                     errors.add(Pair(r-1, c))
-                     errors.add(Pair(r-2, c))
+                if (r < targetGrid.size && c < targetGrid[r].size) {
+                    val cellVal = targetGrid[r][c]
+                    if (cellVal == CellType.SUN) { consS++; consM = 0 }
+                    else if (cellVal == CellType.MOON) { consM++; consS = 0 }
+                    else { consS = 0; consM = 0 }
+                    
+                    if (consS > 2 || consM > 2) {
+                        errors.add(Pair(r, c))
+                        errors.add(Pair(r - 1, c))
+                        errors.add(Pair(r - 2, c))
+                    }
                 }
             }
         }
         return errors
     }
 
-    fun getInvalidConstraints(): Set<TangoConstraint> {
+    fun getErrorCells(): Set<Pair<Int, Int>> {
+        return getErrorCellsWithGrid(getActiveGrid())
+    }
+
+    fun getInvalidConstraintsWithGrid(targetGrid: List<List<CellType>>): Set<TangoConstraint> {
         val inv = mutableSetOf<TangoConstraint>()
         for (vc in currentLevel.vConstraints) {
-            val c1 = grid[vc.row][vc.col]
-            val c2 = grid[vc.row][vc.col+1]
-            if (c1 != CellType.EMPTY && c2 != CellType.EMPTY) {
-                if (vc.type == ConstraintType.EQUALS && c1 != c2) inv.add(vc)
-                if (vc.type == ConstraintType.CROSS && c1 == c2) inv.add(vc)
+            if (vc.row < targetGrid.size && vc.col + 1 < targetGrid[vc.row].size) {
+                val c1 = targetGrid[vc.row][vc.col]
+                val c2 = targetGrid[vc.row][vc.col + 1]
+                if (c1 != CellType.EMPTY && c2 != CellType.EMPTY) {
+                    if (vc.type == ConstraintType.EQUALS && c1 != c2) inv.add(vc)
+                    if (vc.type == ConstraintType.CROSS && c1 == c2) inv.add(vc)
+                }
             }
         }
         for (hc in currentLevel.hConstraints) {
-            val c1 = grid[hc.row][hc.col]
-            val c2 = grid[hc.row+1][hc.col]
-            if (c1 != CellType.EMPTY && c2 != CellType.EMPTY) {
-                if (hc.type == ConstraintType.EQUALS && c1 != c2) inv.add(hc)
-                if (hc.type == ConstraintType.CROSS && c1 == c2) inv.add(hc)
+            if (hc.row + 1 < targetGrid.size && hc.col < targetGrid[hc.row].size) {
+                val c1 = targetGrid[hc.row][hc.col]
+                val c2 = targetGrid[hc.row + 1][hc.col]
+                if (c1 != CellType.EMPTY && c2 != CellType.EMPTY) {
+                    if (hc.type == ConstraintType.EQUALS && c1 != c2) inv.add(hc)
+                    if (hc.type == ConstraintType.CROSS && c1 == c2) inv.add(hc)
+                }
             }
         }
         return inv
+    }
+
+    fun getInvalidConstraints(): Set<TangoConstraint> {
+        return getInvalidConstraintsWithGrid(getActiveGrid())
     }
     
     private fun checkWin() {
         isWon = false
         if (grid.any { row -> row.any { it == CellType.EMPTY } }) return
-        if (getErrorCells().isNotEmpty()) return
-        if (getInvalidConstraints().isNotEmpty()) return
+        if (getErrorCellsWithGrid(grid).isNotEmpty()) return
+        if (getInvalidConstraintsWithGrid(grid).isNotEmpty()) return
         isWon = true
         playSound(1046.5, 200)
         timerJob?.cancel()
+        
+        val previousBest = prefs.getLong("best_time_$currentLevelNumber", 0L)
+        if (previousBest == 0L || timeSpent < previousBest) {
+            prefs.edit().putLong("best_time_$currentLevelNumber", timeSpent).apply()
+            bestTime = timeSpent
+        }
+        
         showWinOverlay = true
     }
 }
@@ -461,6 +1463,85 @@ fun TangoApp() {
             },
             confirmButton = {
                 TextButton(onClick = { showHowToPlay = false }) { Text("Got it!") }
+            }
+        )
+    }
+
+    if (viewModel.showWinOverlay) {
+        AlertDialog(
+            onDismissRequest = { viewModel.showWinOverlay = false },
+            title = {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("🎉 Challenge Complete!", fontWeight = FontWeight.Bold, color = Color(0xFF1976D2))
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Text(
+                        "Congratulations! You solved Challenge ${"%02d".format(viewModel.currentLevelNumber)}.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    
+                    val mins = viewModel.timeSpent / 60
+                    val secs = viewModel.timeSpent % 60
+                    val timeStr = "${"%02d".format(mins)}:${"%02d".format(secs)}"
+                    
+                    val bMins = viewModel.bestTime / 60
+                    val bSecs = viewModel.bestTime % 60
+                    val bestTimeStr = "${"%02d".format(bMins)}:${"%02d".format(bSecs)}"
+                    
+                    val isNewRecord = viewModel.timeSpent == viewModel.bestTime
+                    
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFF5F5F5)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Column(
+                            modifier = Modifier.padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text("Your Time", fontSize = 12.sp, color = Color(0xFF6B655F))
+                            Text(timeStr, style = MaterialTheme.typography.headlineLarge, fontWeight = FontWeight.ExtraBold, color = Color(0xFF1976D2))
+                            
+                            if (isNewRecord) {
+                                Box(
+                                    modifier = Modifier
+                                        .background(Color(0xFFFFD54F), RoundedCornerShape(16.dp))
+                                        .padding(horizontal = 12.dp, vertical = 4.dp)
+                                ) {
+                                    Text("🏆 NEW PERSONAL BEST!", fontSize = 11.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFFE65100))
+                                }
+                            } else {
+                                Divider(color = Color(0xFFEAE8E3), thickness = 1.dp)
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Text("Best Record:", fontSize = 12.sp, color = Color(0xFF6B655F))
+                                    Text(bestTimeStr, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2C2A29))
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = { viewModel.nextLevel() },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1976D2))
+                ) {
+                    Text("Next Challenge")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.showWinOverlay = false }) {
+                    Text("Close", color = Color(0xFF6B655F))
+                }
             }
         )
     }
@@ -499,21 +1580,80 @@ fun TangoApp() {
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    "Challenge ${"%02d".format(viewModel.currentLevelNumber)}",
-                    style = MaterialTheme.typography.displaySmall,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFF2C2A29)
-                )
+                Column {
+                    Text(
+                        "Challenge ${"%02d".format(viewModel.currentLevelNumber)}",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF2C2A29)
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Difficulty Badge
+                        val difficulty = viewModel.getLevelDifficulty()
+                        Box(
+                            modifier = Modifier
+                                .background(difficulty.color.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                difficulty.label,
+                                color = difficulty.color,
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        
+                        // Best Time
+                        if (viewModel.bestTime > 0L) {
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Star,
+                                    contentDescription = "Best Time",
+                                    tint = Color(0xFFFFBF00),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                val bMins = viewModel.bestTime / 60
+                                val bSecs = viewModel.bestTime % 60
+                                Text(
+                                    "Best: ${"%02d".format(bMins)}:${"%02d".format(bSecs)}",
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF6B655F)
+                                )
+                            }
+                        } else {
+                            Text(
+                                "Best: --:--",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = Color(0xFFB1ABA3)
+                            )
+                        }
+                    }
+                }
                 
-                val mins = viewModel.timeSpent / 60
-                val secs = viewModel.timeSpent % 60
-                Text(
-                    "${"%02d".format(mins)}:${"%02d".format(secs)}", 
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = Color(0xFF1976D2)
-                )
+                Column(horizontalAlignment = Alignment.End) {
+                    val mins = viewModel.timeSpent / 60
+                    val secs = viewModel.timeSpent % 60
+                    Text(
+                        "${"%02d".format(mins)}:${"%02d".format(secs)}", 
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = Color(0xFF1976D2)
+                    )
+                    Text(
+                        "Current time",
+                        fontSize = 10.sp,
+                        color = Color(0xFF8D877F)
+                    )
+                }
             }
             
             Spacer(Modifier.weight(1f))
@@ -529,6 +1669,7 @@ fun TangoApp() {
                     level = viewModel.currentLevel,
                     errorCells = viewModel.getErrorCells(),
                     errorConstraints = viewModel.getInvalidConstraints(),
+                    violatedCells = viewModel.getTripleViolationCells(),
                     targetCell = viewModel.targetCell,
                     sourceCells = viewModel.sourceCells,
                     onCellClick = viewModel::onCellClick
@@ -537,15 +1678,72 @@ fun TangoApp() {
             
             if (viewModel.hintExplanation.isNotEmpty()) {
                 Spacer(Modifier.height(16.dp))
-                Text(
-                    text = viewModel.hintExplanation,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color(0xFF1976D2),
+                Card(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color(0xFFE3F2FD), RoundedCornerShape(8.dp))
-                        .padding(12.dp)
-                )
+                        .border(1.dp, Color(0xFFE4E1DB), RoundedCornerShape(16.dp)),
+                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFAF9F6)),
+                    shape = RoundedCornerShape(16.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+                ) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Hint:",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = Color(0xFF2C2A29)
+                            )
+                            IconButton(
+                                onClick = { viewModel.clearHint() },
+                                modifier = Modifier.size(24.dp)
+                            ) {
+                                Icon(
+                                    imageVector = androidx.compose.material.icons.Icons.Default.Close,
+                                    contentDescription = "Close Hint",
+                                    tint = Color(0xFF8D877F),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                            }
+                        }
+                        
+                        Text(
+                            text = viewModel.hintExplanation,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color(0xFF2C2A29),
+                            lineHeight = 20.sp
+                        )
+                        
+                        if (viewModel.activeHint != null) {
+                            val target = Pair(viewModel.activeHint!!.row, viewModel.activeHint!!.col)
+                            val isMistakeCorrection = viewModel.grid[target.first][target.second] != CellType.EMPTY
+                            Button(
+                                onClick = { viewModel.applyActiveHint() },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = Color.White,
+                                    contentColor = Color(0xFF6B655F)
+                                ),
+                                border = BorderStroke(1.dp, Color(0xFFB1ABA3)),
+                                shape = RoundedCornerShape(12.dp),
+                                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                                modifier = Modifier.height(36.dp)
+                            ) {
+                                Text(
+                                    text = if (isMistakeCorrection) "Correct it" else "Show me",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp
+                                )
+                            }
+                        }
+                    }
+                }
             }
             
             Spacer(Modifier.weight(1f))
@@ -555,7 +1753,7 @@ fun TangoApp() {
                 horizontalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Button(
-                    onClick = { viewModel.loadCurrentLevel() },
+                    onClick = { viewModel.replayLevel() },
                     modifier = Modifier.weight(1f).height(56.dp),
                     shape = CircleShape,
                     colors = ButtonDefaults.buttonColors(
@@ -633,6 +1831,7 @@ fun TangoBoard(
     level: TangoLevel, 
     errorCells: Set<Pair<Int, Int>>,
     errorConstraints: Set<TangoConstraint>,
+    violatedCells: Set<Pair<Int, Int>> = emptySet(),
     targetCell: Pair<Int, Int>? = null,
     sourceCells: Set<Pair<Int, Int>> = emptySet(),
     onCellClick: (Int, Int) -> Unit
@@ -655,8 +1854,8 @@ fun TangoBoard(
                         val isLocked = level.initial[r][c] != CellType.EMPTY
                         
                         val bgColor = if (isError) Color(0xFFFFEBEE) 
-                                      else if (isTarget) Color(0xFFFFF59D)
-                                      else if (isSource) Color(0xFFBBDEFB)
+                                      else if (isTarget) Color.White
+                                      else if (isSource) Color(0xFFE3F2FD) // light-blue background for sources
                                       else if (isLocked) Color(0xFFEAE8E3)
                                       else Color.White
 
@@ -665,6 +1864,11 @@ fun TangoBoard(
                                 .weight(1f)
                                 .fillMaxHeight()
                                 .background(bgColor)
+                                .then(
+                                    if (isTarget) Modifier.border(3.dp, Color(0xFF1976D2))
+                                    else if (isSource) Modifier.border(2.dp, Color(0xFF90CAF9))
+                                    else Modifier
+                                )
                                 .clickable(enabled = !isLocked) { onCellClick(r, c) },
                             contentAlignment = Alignment.Center
                         ) {
@@ -698,6 +1902,27 @@ fun TangoBoard(
                     start = Offset(0f, cellH * i),
                     end = Offset(size.width, cellH * i),
                     strokeWidth = 2.dp.toPx()
+                )
+            }
+
+            // Draw beautiful translucent red overlay & solid border ONLY for violated three-in-a-row cells
+            for (cell in violatedCells) {
+                val r = cell.first
+                val c = cell.second
+                val padding = 4.dp.toPx()
+                drawRoundRect(
+                    color = Color(0x22F44336), // translucent soft red overlay
+                    topLeft = Offset(c * cellW + padding, r * cellH + padding),
+                    size = androidx.compose.ui.geometry.Size(cellW - padding * 2, cellH - padding * 2),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx(), 8.dp.toPx()),
+                    style = Fill
+                )
+                drawRoundRect(
+                    color = Color(0xFFE53935), // solid red tracking outline
+                    topLeft = Offset(c * cellW + padding, r * cellH + padding),
+                    size = androidx.compose.ui.geometry.Size(cellW - padding * 2, cellH - padding * 2),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(8.dp.toPx(), 8.dp.toPx()),
+                    style = Stroke(width = 2.dp.toPx())
                 )
             }
             
